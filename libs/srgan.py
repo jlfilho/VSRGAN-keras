@@ -1,32 +1,39 @@
-#! /usr/bin/python
+# encoding: utf-8
+
 import os
 import sys
-import pickle
+import warnings
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
+warnings.filterwarnings("ignore")
+#stderr = sys.stderr
+#sys.stderr = open(os.devnull, 'w')
+
 import datetime
-
-import numpy as np
-
-# Import keras + tensorflow without the "Using XX Backend" message
-stderr = sys.stderr
-sys.stderr = open(os.devnull, 'w')
 import tensorflow as tf
-from keras.models import Sequential, Model
-from keras.layers import Input, Activation, Add
-from keras.layers import BatchNormalization, LeakyReLU, PReLU, Conv2D, Dense
-from keras.layers import UpSampling2D, Lambda
-from keras.optimizers import Adam
-from keras.applications import VGG19
-from keras.applications.vgg19 import preprocess_input
-from keras.utils.data_utils import OrderedEnqueuer
-from keras import backend as K
-from keras.callbacks import TensorBoard, ModelCheckpoint, LambdaCallback
-sys.stderr = stderr
+import numpy as np
+import restore
 
-from libs.util import DataLoader, plot_test_images
+from keras.models import Model
+from keras.layers import Input, Add, BatchNormalization
+from keras.layers import LeakyReLU, Conv2D, Dense, PReLU, Lambda
+from keras.optimizers import Adam
+#from keras.utils.data_utils import OrderedEnqueuer, SequenceEnqueuer, GeneratorEnqueuer
+from tensorflow.keras.utils import OrderedEnqueuer, GeneratorEnqueuer, SequenceEnqueuer
+from keras.callbacks import TensorBoard, ModelCheckpoint, LambdaCallback
+from keras.callbacks import ReduceLROnPlateau, EarlyStopping
+from keras import backend as K
+from tqdm import tqdm
+
+from util import DataLoader, plot_test_images 
+
+from losses import psnr3 as psnr
+from losses import VGGLoss
+
 
 
 class SRGAN():
-    """
+    """ 
     Implementation of SRGAN as described in the paper:
     Photo-Realistic Single Image Super-Resolution Using a Generative Adversarial Network
     https://arxiv.org/abs/1609.04802
@@ -35,11 +42,11 @@ class SRGAN():
     def __init__(self, 
         height_lr=24, width_lr=24, channels=3,
         upscaling_factor=4, 
-        gen_lr=1e-4, dis_lr=1e-4, 
-        # VGG scaled with 1/12.75 as in paper
-        loss_weights=[1e-3, 0.006], 
-        training_mode=True
+        gen_lr=1e-4, dis_lr=1e-4, loss_weights=[0.006, 1e-3], 
+        training_mode=True,
+        colorspace = 'RGB'
     ):
+                 
         """        
         :param int height_lr: Height of low-resolution images
         :param int width_lr: Width of low-resolution images
@@ -49,9 +56,12 @@ class SRGAN():
         :param int dis_lr: Learning rate of discriminator
         """
         
+        
+
         # Low-resolution image dimensions
         self.height_lr = height_lr
         self.width_lr = width_lr
+        self.training_mode = training_mode
 
         # High-resolution image dimensions
         if upscaling_factor not in [2, 4, 8]:
@@ -62,6 +72,7 @@ class SRGAN():
 
         # Low-resolution and high-resolution shapes
         self.channels = channels
+        self.colorspace = colorspace
         self.shape_lr = (self.height_lr, self.width_lr, self.channels)
         self.shape_hr = (self.height_hr, self.width_hr, self.channels)
 
@@ -69,12 +80,12 @@ class SRGAN():
         self.gen_lr = gen_lr
         self.dis_lr = dis_lr
         
-        # Scaling of losses
-        self.loss_weights = loss_weights
-
         # Gan setup settings
-        self.gan_loss = 'mse'
-        self.dis_loss = 'binary_crossentropy'
+        self.loss_weights=loss_weights
+        self.VGGLoss = VGGLoss(self.shape_hr)
+        self.gen_loss =  'mse' 
+        self.content_loss = self.VGGLoss.content_loss # self.VGGLoss.euclidean_content_loss
+        self.adversarial_loss = 'binary_crossentropy'
         
         # Build & compile the generator network
         self.generator = self.build_generator()
@@ -82,21 +93,19 @@ class SRGAN():
 
         # If training, build rest of GAN network
         if training_mode:
-            self.vgg = self.build_vgg()
-            self.compile_vgg(self.vgg)
             self.discriminator = self.build_discriminator()
             self.compile_discriminator(self.discriminator)
             self.srgan = self.build_srgan()
             self.compile_srgan(self.srgan)
-        
 
-    
+
     def save_weights(self, filepath):
         """Save the generator and discriminator networks"""
         self.generator.save_weights("{}_generator_{}X.h5".format(filepath, self.upscaling_factor))
         self.discriminator.save_weights("{}_discriminator_{}X.h5".format(filepath, self.upscaling_factor))
 
     def load_weights(self, generator_weights=None, discriminator_weights=None, **kwargs):
+        print(">> Loading weights...")
         if generator_weights:
             self.generator.load_weights(generator_weights, **kwargs)
         if discriminator_weights:
@@ -124,31 +133,6 @@ class SRGAN():
 
         return Lambda(subpixel, output_shape=subpixel_shape, name=name)
 
-    def build_vgg(self):
-        """
-        Load pre-trained VGG weights from keras applications
-        Extract features to be used in loss function from last conv layer, see architecture at:
-        https://github.com/keras-team/keras/blob/master/keras/applications/vgg19.py
-        """
-
-        # Input image to extract features from
-        img = Input(shape=self.shape_hr)
-
-        # Get the vgg network. Extract features from last conv layer
-        vgg = VGG19(weights="imagenet")
-        vgg.outputs = [vgg.layers[20].output]
-
-        # Create model and compile
-        model = Model(inputs=img, outputs=vgg(img))
-        model.trainable = False
-        return model    
-    
-    def preprocess_vgg(self, x):
-        """Take a HR image [-1, 1], convert to [0, 255], then to input for VGG network"""
-        if isinstance(x, np.ndarray):
-            return preprocess_input((x+1)*127.5)
-        else:            
-            return Lambda(lambda x: preprocess_input(tf.add(x, 1) * 127.5))(x)     
 
     def build_generator(self, residual_blocks=16):
         """
@@ -161,34 +145,37 @@ class SRGAN():
 
         def residual_block(input):
             x = Conv2D(64, kernel_size=3, strides=1, padding='same')(input)
-            x = BatchNormalization(momentum=0.8)(x)
+            if self.training_mode:
+                x = BatchNormalization(momentum=0.8)(x)
             x = PReLU(shared_axes=[1,2])(x)            
             x = Conv2D(64, kernel_size=3, strides=1, padding='same')(x)
-            x = BatchNormalization(momentum=0.8)(x)
+            if self.training_mode:
+                x = BatchNormalization(momentum=0.8)(x)
             x = Add()([x, input])
             return x
 
         def upsample(x, number):
-            x = Conv2D(256, kernel_size=3, strides=1, padding='same', name='upSampleConv2d_'+str(number))(x)
-            x = self.SubpixelConv2D('upSampleSubPixel_'+str(number), 2)(x)
-            x = PReLU(shared_axes=[1,2], name='upSamplePReLU_'+str(number))(x)
+            x = Conv2D(256, kernel_size=3, strides=1, padding='same', name='upSample_Conv2d_'+str(number))(x)
+            x = self.SubpixelConv2D('upSample_SubPixel_'+str(number), 2)(x)
+            x = PReLU(shared_axes=[1,2], name='upSample_PReLU_'+str(number))(x)
             return x
 
         # Input low resolution image
-        lr_input = Input(shape=(None, None, 3))
+        lr_input = Input(shape=(None, None, self.channels),name='Input-gen')
 
         # Pre-residual
-        x_start = Conv2D(64, kernel_size=9, strides=1, padding='same')(lr_input)
-        x_start = PReLU(shared_axes=[1,2])(x_start)
+        x_start = Conv2D(64, kernel_size=9, strides=1, padding='same',name='Conv2d-pre')(lr_input)
+        x_start = PReLU(shared_axes=[1,2],name='PReLU-pre')(x_start)
 
         # Residual blocks
-        r = residual_block(x_start)
+        x = residual_block(x_start)
         for _ in range(residual_blocks - 1):
-            r = residual_block(r)
+            x = residual_block(x)
 
         # Post-residual block
-        x = Conv2D(64, kernel_size=3, strides=1, padding='same')(r)
-        x = BatchNormalization(momentum=0.8)(x)
+        x = Conv2D(64, kernel_size=3, strides=1, padding='same',name='Conv-pos')(x)
+        if self.training_mode:
+            x = BatchNormalization(momentum=0.8,name='BN-pos')(x)
         x = Add()([x, x_start])
         
         # Upsampling depending on factor
@@ -201,18 +188,19 @@ class SRGAN():
         # Generate high resolution output
         # tanh activation, see: 
         # https://towardsdatascience.com/gan-ways-to-improve-gan-performance-acf37f9f59b
-        hr_output = Conv2D(
+        x = Conv2D(
             self.channels, 
             kernel_size=9, 
             strides=1, 
             padding='same', 
-            activation='tanh'
+            activation='tanh',name='Conv-out'
         )(x)
+        # Create model 
+        model = Model(inputs=lr_input, outputs=x,name='Generator')        
+        #model.summary()
+        return model
 
-        # Create model and compile
-        model = Model(inputs=lr_input, outputs=hr_output)        
-        return model    
-
+  
     def build_discriminator(self, filters=64):
         """
         Build the discriminator network according to description in the paper.
@@ -224,14 +212,15 @@ class SRGAN():
 
         def conv2d_block(input, filters, strides=1, bn=True):
             d = Conv2D(filters, kernel_size=3, strides=strides, padding='same')(input)
-            d = LeakyReLU(alpha=0.2)(d)
             if bn:
                 d = BatchNormalization(momentum=0.8)(d)
+            d = LeakyReLU(alpha=0.2)(d)
             return d
 
         # Input high resolution image
         img = Input(shape=self.shape_hr)
         x = conv2d_block(img, filters, bn=False)
+        
         x = conv2d_block(x, filters, strides=2)
         x = conv2d_block(x, filters*2)
         x = conv2d_block(x, filters*2, strides=2)
@@ -244,168 +233,209 @@ class SRGAN():
         x = Dense(1, activation='sigmoid')(x)
 
         # Create model and compile
-        model = Model(inputs=img, outputs=x)
+        model = Model(inputs=img, outputs=x,name='Discriminator')
+        #model.summary()
         return model
 
+  
     def build_srgan(self):
         """Create the combined SRGAN network"""
 
         # Input LR images
-        img_lr = Input(self.shape_lr)
+        img_lr = Input(self.shape_lr,name='input_gan')
 
         # Create a high resolution image from the low resolution one
         generated_hr = self.generator(img_lr)
-        generated_features = self.vgg(
-            self.preprocess_vgg(generated_hr)
-        )
 
         # In the combined model we only train the generator
         self.discriminator.trainable = False
 
         # Determine whether the generator HR images are OK
         generated_check = self.discriminator(generated_hr)
-        
+
         # Create sensible names for outputs in logs
-        generated_features = Lambda(lambda x: x, name='Content')(generated_features)
+        generated_hr = Lambda(lambda x: x, name='Content')(generated_hr)
         generated_check = Lambda(lambda x: x, name='Adversarial')(generated_check)
 
         # Create model and compile
         # Using binary_crossentropy with reversed label, to get proper loss, see:
         # https://danieltakeshi.github.io/2017/03/05/understanding-generative-adversarial-networks/
-        model = Model(inputs=img_lr, outputs=[generated_check, generated_features])        
+        model = Model(inputs=img_lr, outputs=[generated_hr,generated_check],name='GAN')
+        #model.summary()        
         return model
 
-    def compile_vgg(self, model):
-        """Compile the generator with appropriate optimizer"""
-        model.compile(
-            loss='mse',
-            optimizer=Adam(0.0001, 0.9),
-            metrics=['accuracy']
-        )
+
+
 
     def compile_generator(self, model):
         """Compile the generator with appropriate optimizer"""
         model.compile(
-            loss=self.gan_loss,
-            optimizer=Adam(self.gen_lr, 0.9),
-            metrics=['mse', self.PSNR]
+            loss=self.gen_loss,
+            optimizer=Adam(lr=self.gen_lr, beta_1=0.9),
+            metrics=[psnr]
         )
 
     def compile_discriminator(self, model):
         """Compile the generator with appropriate optimizer"""
         model.compile(
-            loss=self.dis_loss,
-            optimizer=Adam(self.dis_lr, 0.9),
+            loss=self.adversarial_loss,
+            optimizer=Adam(lr=self.dis_lr, beta_1=0.9),
             metrics=['accuracy']
         )
+
 
     def compile_srgan(self, model):
         """Compile the GAN with appropriate optimizer"""
         model.compile(
-            loss=[self.dis_loss, self.gan_loss],
+            loss=[self.content_loss,self.adversarial_loss],
             loss_weights=self.loss_weights,
-            optimizer=Adam(self.gen_lr, 0.9)
+            optimizer=Adam(lr=self.gen_lr, beta_1=0.9)
         )
-    
-    def PSNR(self, y_true, y_pred):
-        """
-        PSNR is Peek Signal to Noise Ratio, see https://en.wikipedia.org/wiki/Peak_signal-to-noise_ratio
 
-        The equation is:
-        PSNR = 20 * log10(MAX_I) - 10 * log10(MSE)
-        
-        Since input is scaled from -1 to 1, MAX_I = 1, and thus 20 * log10(1) = 0. Only the last part of the equation is therefore neccesary.
-        """
-        return -10.0 * K.log(K.mean(K.square(y_pred - y_true))) / K.log(10.0) 
-    
     def train_generator(self,
-        epochs, batch_size,
-        workers,
-        dataname, 
-        datapath_train,
-        datapath_validation=None,
-        datapath_test=None,
-        steps_per_epoch=1000,
-        steps_per_validation=1000,
-        crops_per_image=2,
-        log_weight_path='./data/weights/', 
-        log_tensorboard_path='./data/logs/',
-        log_tensorboard_name='SRResNet',
-        log_tensorboard_update_freq=10000,
-        log_test_path="./images/samples/"
+        epochs=None, batch_size=None,
+        workers=None,
+        max_queue_size=None,
+        modelname=None, 
+        datapath_train=None,
+        datapath_validation='../',
+        datapath_test='../',
+        steps_per_epoch=None,
+        steps_per_validation=None,
+        crops_per_image=None,
+        print_frequency=None,
+        log_weight_path='./model/', 
+        log_tensorboard_path='./logs/',
+        log_tensorboard_update_freq=None,
+        log_test_path="./test/",
+        media_type='i'
     ):
-        """Trains the generator part of the network with MSE loss"""        
+        """Trains the generator part of the network with MSE loss"""
+
 
         # Create data loaders
         train_loader = DataLoader(
             datapath_train, batch_size,
             self.height_hr, self.width_hr,
             self.upscaling_factor,
-            crops_per_image
+            crops_per_image,
+            media_type,
+            self.channels,
+            self.colorspace
         )
-        test_loader = None
+
+        
+        validation_loader = None 
         if datapath_validation is not None:
-            test_loader = DataLoader(
+            validation_loader = DataLoader(
                 datapath_validation, batch_size,
                 self.height_hr, self.width_hr,
                 self.upscaling_factor,
-                crops_per_image
-            )
+                crops_per_image,
+                media_type,
+                self.channels,
+                self.colorspace
+        )
+
+        test_loader = None
+        if datapath_test is not None:
+            test_loader = DataLoader(
+                datapath_test, 1,
+                self.height_hr, self.width_hr,
+                self.upscaling_factor,
+                1,
+                media_type,
+                self.channels,
+                self.colorspace
+        )
+
         
         # Callback: tensorboard
         callbacks = []
         if log_tensorboard_path:
             tensorboard = TensorBoard(
-                log_dir=os.path.join(log_tensorboard_path, log_tensorboard_name),
+                log_dir=os.path.join(log_tensorboard_path, modelname),
                 histogram_freq=0,
                 batch_size=batch_size,
-                write_graph=False,
-                write_grads=False,
+                write_graph=True,
+                write_grads=True,
                 update_freq=log_tensorboard_update_freq
             )
             callbacks.append(tensorboard)
         else:
             print(">> Not logging to tensorboard since no log_tensorboard_path is set")
+
+	# Callback: Stop training when a monitored quantity has stopped improving
+        earlystopping = EarlyStopping(
+            monitor='val_loss', 
+	        patience=500, verbose=1, 
+	        restore_best_weights=True     
+        )
+        callbacks.append(earlystopping)
         
         # Callback: save weights after each epoch
         modelcheckpoint = ModelCheckpoint(
-            os.path.join(log_weight_path, dataname + '_{}X'.format(self.upscaling_factor)), 
+            os.path.join(log_weight_path, modelname + '_{}X.h5'.format(self.upscaling_factor)), 
             monitor='val_loss', 
             save_best_only=True, 
             save_weights_only=True
         )
         callbacks.append(modelcheckpoint)
+
+        # Callback: Reduce lr when a monitored quantity has stopped improving
+        reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=1e-1,
+                                    patience=100, min_lr=1e-6,verbose=1)
+        #callbacks.append(reduce_lr)
+
+
+        # Callback: save weights after each epoch
+        modelcheckpoint = ModelCheckpoint(
+            os.path.join(log_weight_path, modelname + '_{}X.h5'.format(self.upscaling_factor)), 
+            monitor='val_loss', 
+            save_best_only=True, 
+            save_weights_only=True)
+        callbacks.append(modelcheckpoint)
+ 
         
-        # Callback: test images plotting
+         # Callback: test images plotting
         if datapath_test is not None:
             testplotting = LambdaCallback(
-                on_epoch_end=lambda epoch, logs: plot_test_images(
-                    self, 
-                    train_loader, 
-                    datapath_test, 
-                    log_test_path, 
-                    epoch, 
-                    name='SRResNet'
-                )
-            )
-            callbacks.append(testplotting)
+                on_epoch_end=lambda epoch, logs: None if ((epoch+1) % print_frequency != 0 ) else plot_test_images(
+                    self.generator,
+                    test_loader,
+                    datapath_test,
+                    log_test_path,
+                    epoch+1,
+                    name=modelname,
+                    channels=self.channels,
+                    colorspace=self.colorspace))
+        callbacks.append(testplotting)
+
+        # Use several workers on CPU for preparing batches
+        enqueuer = OrderedEnqueuer(
+            train_loader,
+            use_multiprocessing=True
+        )
+        enqueuer.start(workers=workers, max_queue_size=max_queue_size)
+        output_generator = enqueuer.get()
+
                             
         # Fit the model
         self.generator.fit_generator(
-            train_loader,
+            output_generator,
             steps_per_epoch=steps_per_epoch,
             epochs=epochs,
-            validation_data=test_loader,
+            validation_data=validation_loader,
             validation_steps=steps_per_validation,
             callbacks=callbacks,
-            use_multiprocessing=workers>1,
+            use_multiprocessing=False, #workers>1 because single gpu
             workers=workers
         )
 
     def train_srgan(self, 
-        epochs, batch_size, 
-        dataname, 
-        datapath_train,
+        epochs=None, batch_size=16, 
+        modelname=None, 
+        datapath_train=None,
         datapath_validation=None, 
         steps_per_validation=1000,
         datapath_test=None, 
@@ -414,17 +444,17 @@ class SRGAN():
         print_frequency=1,
         crops_per_image=2,
         log_weight_frequency=None, 
-        log_weight_path='./data/weights/', 
+        log_weight_path='./model/', 
         log_tensorboard_path='./data/logs/',
-        log_tensorboard_name='SRGAN',
-        log_tensorboard_update_freq=10000,
+        log_tensorboard_update_freq=10,
         log_test_frequency=500,
-        log_test_path="./images/samples/",         
+        log_test_path="./images/samples/", 
+        media_type='i'        
     ):
         """Train the SRGAN network
 
         :param int epochs: how many epochs to train the network for
-        :param str dataname: name to use for storing model weights etc.
+        :param str modelname: name to use for storing model weights etc.
         :param str datapath_train: path for the image files to use for training
         :param str datapath_test: path for the image files to use for testing / plotting
         :param int print_frequency: how often (in epochs) to print progress to terminal. Warning: will run validation inference!
@@ -433,29 +463,49 @@ class SRGAN():
         :param int log_test_frequency: how often (in epochs) should testing & validation be performed
         :param str log_test_path: where should test results be saved
         :param str log_tensorboard_path: where should tensorflow logs be sent
-        :param str log_tensorboard_name: what folder should tf logs be saved under        
         """
 
-        # Create train data loader
-        loader = DataLoader(
+        
+        
+         # Create data loaders
+        train_loader = DataLoader(
             datapath_train, batch_size,
             self.height_hr, self.width_hr,
             self.upscaling_factor,
-            crops_per_image
+            crops_per_image,
+            media_type,
+            self.channels,
+            self.colorspace
         )
 
         # Validation data loader
+        validation_loader = None 
         if datapath_validation is not None:
             validation_loader = DataLoader(
                 datapath_validation, batch_size,
                 self.height_hr, self.width_hr,
                 self.upscaling_factor,
-                crops_per_image
-            )
-        
+                crops_per_image,
+                media_type,
+                self.channels,
+                self.colorspace
+        )
+
+        test_loader = None
+        if datapath_test is not None:
+            test_loader = DataLoader(
+                datapath_test, 1,
+                self.height_hr, self.width_hr,
+                self.upscaling_factor,
+                1,
+                media_type,
+                self.channels,
+                self.colorspace
+        )
+    
         # Use several workers on CPU for preparing batches
         enqueuer = OrderedEnqueuer(
-            loader,
+            train_loader,
             use_multiprocessing=True,
             shuffle=True
         )
@@ -465,7 +515,7 @@ class SRGAN():
         # Callback: tensorboard
         if log_tensorboard_path:
             tensorboard = TensorBoard(
-                log_dir=os.path.join(log_tensorboard_path, log_tensorboard_name),
+                log_dir=os.path.join(log_tensorboard_path, modelname),
                 histogram_freq=0,
                 batch_size=batch_size,
                 write_graph=False,
@@ -491,14 +541,15 @@ class SRGAN():
 
         # VALID / FAKE targets for discriminator
         real = np.ones(disciminator_output_shape)
-        fake = np.zeros(disciminator_output_shape)        
+        fake = np.zeros(disciminator_output_shape) 
+               
 
         # Each epoch == "update iteration" as defined in the paper        
-        print_losses = {"G": [], "D": []}
+        print_losses = {"GAN": [], "D": []}
         start_epoch = datetime.datetime.now()
         
         # Random images to go through
-        idxs = np.random.randint(0, len(loader), epochs)        
+        idxs = np.random.randint(0, len(train_loader), epochs)        
         
         # Loop through epochs / iterations
         for epoch in range(first_epoch, int(epochs)+first_epoch):
@@ -507,36 +558,54 @@ class SRGAN():
             if epoch % (print_frequency + 1) == 0:
                 start_epoch = datetime.datetime.now()            
 
-            # Train discriminator   
+            # Train discriminator 
+            self.discriminator.trainable = True
+            #real = np.ones(disciminator_output_shape) - np.random.random_sample(disciminator_output_shape)*0.05
+            #fake = np.random.random_sample(disciminator_output_shape)*0.05  
+            labels = np.concatenate([real, fake])
             imgs_lr, imgs_hr = next(output_generator)
             generated_hr = self.generator.predict(imgs_lr)
-            real_loss = self.discriminator.train_on_batch(imgs_hr, real)
-            fake_loss = self.discriminator.train_on_batch(generated_hr, fake)
-            discriminator_loss = 0.5 * np.add(real_loss, fake_loss)
+            combined_images = np.concatenate([imgs_hr, generated_hr])
+            discriminator_loss = self.discriminator.train_on_batch(combined_images, labels)
+            #real_loss = self.discriminator.train_on_batch(imgs_hr, real)
+            #print("Real: ",real_loss)
+            #fake_loss = self.discriminator.train_on_batch(generated_hr, fake)
+            #print("Fake: ",fake_loss)
+            #discriminator_loss = 0.5 * np.add(real_loss, fake_loss)
+            
 
             # Train generator
-            features_hr = self.vgg.predict(self.preprocess_vgg(imgs_hr))
-            generator_loss = self.srgan.train_on_batch(imgs_lr, [real, features_hr])            
+            self.discriminator.trainable = False
+            #real = np.ones(disciminator_output_shape) - np.random.random_sample(disciminator_output_shape)*0.05  
+            #imgs_lr, imgs_hr = next(output_generator)
+            #gan_loss = self.srgan.train_on_batch(imgs_lr, [imgs_hr,real])
 
+            """ real = np.ones(disciminator_output_shape) - np.random.random_sample(disciminator_output_shape)*0.2 """  
+            
+            #for _ in tqdm(range(1),ncols=1,desc=">> Training generator:"):
+            imgs_lr, imgs_hr = next(output_generator)
+            gan_loss = self.srgan.train_on_batch(imgs_lr, [imgs_hr,real])
+
+     
             # Callbacks
-            logs = named_logs(self.srgan, generator_loss)
+            logs = named_logs(self.srgan, gan_loss)
             tensorboard.on_epoch_end(epoch, logs)
 
             # Save losses            
-            print_losses['G'].append(generator_loss)
+            print_losses['GAN'].append(gan_loss)
             print_losses['D'].append(discriminator_loss)
 
             # Show the progress
             if epoch % print_frequency == 0:
-                g_avg_loss = np.array(print_losses['G']).mean(axis=0)
+                g_avg_loss = np.array(print_losses['GAN']).mean(axis=0)
                 d_avg_loss = np.array(print_losses['D']).mean(axis=0)
-                print("\nEpoch {}/{} | Time: {}s\n>> Generator/GAN: {}\n>> Discriminator: {}".format(
+                print("\nEpoch {}/{} | Time: {}s\n>> GAN: {}\n>> Discriminator: {}".format(
                     epoch, epochs+first_epoch,
                     (datetime.datetime.now() - start_epoch).seconds,
                     ", ".join(["{}={:.4f}".format(k, v) for k, v in zip(self.srgan.metrics_names, g_avg_loss)]),
                     ", ".join(["{}={:.4f}".format(k, v) for k, v in zip(self.discriminator.metrics_names, d_avg_loss)])
                 ))
-                print_losses = {"G": [], "D": []}
+                print_losses = {"GAN": [], "D": []}
 
                 # Run validation inference if specified
                 if datapath_validation:
@@ -552,38 +621,90 @@ class SRGAN():
 
             # If test images are supplied, run model on them and save to log_test_path
             if datapath_test and epoch % log_test_frequency == 0:
-                plot_test_images(self, loader, datapath_test, log_test_path, epoch)
+                plot_test_images(self.generator, test_loader, datapath_test, log_test_path, epoch, modelname,
+                channels = self.channels,colorspace=self.colorspace)
 
             # Check if we should save the network weights
             if log_weight_frequency and epoch % log_weight_frequency == 0:
-
                 # Save the network weights
-                self.save_weights(os.path.join(log_weight_path, dataname))
+                self.save_weights(os.path.join(log_weight_path, modelname))
 
+    def predict(self,
+            lr_path = None,
+            sr_path = None,
+            print_frequency = False,
+            qp = 8,
+            fps = None,
+            media_type = None 
+        ):
+        """ lr_videopath: path of video in low resoluiton
+            sr_videopath: path to output video 
+            print_frequency: print frequncy the time per frame and estimated time, if False no print 
+            crf: [0,51] QP parameter 0 is the best quality and 51 is the worst one
+            fps: framerate if None is use the same framerate of the LR video
+            media_type: type of media 'v' to video and 'i' to image
+        """
+        if(media_type == 'v'):
+            time_elapsed = restore.write_srvideo(self.generator,lr_path,sr_path,self.upscaling_factor,print_frequency=print_frequency,crf=qp,fps=fps)
+        elif(media_type == 'i'):
+            time_elapsed = restore.write_sr_images(self.generator, lr_imagepath=lr_path, sr_imagepath=sr_path,scale=self.upscaling_factor)
+        else:
+            print(">> Media type not defined or not suported!")
+            return 0
+        return time_elapsed
 
 # Run the SRGAN network
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     # Instantiate the SRGAN object
-    print(">> Creating the SRGAN network")
-    gan = SRGAN(gen_lr=1e-5)
+    print(">> Creating the SRResNet network")
+    SRResNet = SRGAN(upscaling_factor=2,channels=3,colorspace='RGB',training_mode=True)
+    SRResNet.load_weights('../model/SRResNet_places365_2X.h5')
+    
+    t = SRResNet.predict(
+            lr_path='../../../data/videos_harmonic/MYANMAR_2160p/LR/2x/myanmar01_cv_2x_qp0.mp4', 
+            sr_path='../out/myanmar01_cv_2x_qp0.mp4',
+            qp=8,
+            print_frequency=1,
+            fps=30,
+            media_type='v'
+    )
 
-    # Load previous imagenet weights
-    print(">> Loading old weights")
-    gan.load_weights('../data/weights/imagenet_generator.h5', '../data/weights/imagenet_discriminator.h5')
+
 
     # Train the SRGAN
-    gan.train(
-        epochs=100000,
-        dataname='imagenet',
-        datapath='../data/imagenet/train/',
-        test_images=[
-            '../data/buket.jpg'
-            
-        ],        
-        test_frequency=1000,
-        test_path='../images/samples/',
-        weight_path='../data/weights/',
-        weight_frequency=1000,
-        print_frequency=10,
-    )
+    """ gan.train_srgan(
+        epochs=1000,
+        batch_size=16,
+        modelname='SRGAN',
+        datapath_train='../../../data/train_large/',
+        datapath_validation='../../data/val_large/',        
+        steps_per_validation=10,
+        datapath_test='../../data/benchmarks/Set5/', 
+        workers=4, max_queue_size=10,
+        first_epoch=0,
+        print_frequency=1,
+        crops_per_image=2,
+        log_weight_frequency=2, 
+        log_weight_path='../model/', 
+        log_tensorboard_path='../logs/',
+        log_tensorboard_update_freq=10,
+        log_test_frequency=10,
+        log_test_path="../test/"
+    ) """
+
+    """ gan.train_generator(
+        epochs=50,batch_size=16,workers=1,
+        modelname='SRResNet',
+	    datapath_train='../../../data/train_large/',
+	    datapath_validation='../../data/val_large/',
+	    datapath_test='../../data/benchmarks/Set5/',
+	    steps_per_epoch=10,
+        print_frequency=1,
+        steps_per_validation=10,
+        crops_per_image=4,
+        log_weight_path='../model/', 
+        log_tensorboard_path='../logs/',
+        log_tensorboard_update_freq=10,
+        log_test_path="../test/"
+    ) """

@@ -1,116 +1,202 @@
+#!/usr/bin/python3
+# encoding: utf-8
+
+
 import os
 import sys
+os.environ['CUDA_VISIBLE_DEVICES']='0' #Set a single gpu
+#stderr = sys.stderr
+#sys.stderr = open(os.devnull, 'w')
+sys.path.append('libs/')  
 import gc
 import numpy as np
-from argparse import ArgumentParser
-
-from PIL import Image
 import matplotlib.pyplot as plt
-
 # Import backend without the "Using X Backend" message
-stderr = sys.stderr
-sys.stderr = open(os.devnull, 'w')
+from argparse import ArgumentParser
+from PIL import Image
+from srgan import SRGAN
+from util import plot_test_images, DataLoader
 from keras import backend as K
-sys.stderr = stderr
-
-from libs.srgan import SRGAN
-from libs.util import plot_test_images, DataLoader
 
 
 # Sample call
 """
 # Train 2X SRGAN
-python train.py --train C:/Documents/Kaggle/Kaggle-imagenet/input/DET/train --validation C:/Documents/Kaggle/Kaggle-imagenet/input/DET/test --scale 2 --test_path images/samples_2X --stage gan
+python3 train.py --train ../../data/train_large/ --validation ../data/val_large/ --test ../data/benchmarks/Set5/  --log_test_path ./test/ --scale 2 --stage all
 
 # Train the 4X SRGAN
-python train.py --train C:/Documents/Kaggle/Kaggle-imagenet/input/DET/train --validation C:/Documents/Kaggle/Kaggle-imagenet/input/DET/test --scale 4 --test_path images/samples_4X --scaleFrom 2
+python3 train.py --train ../../data/train_large/ --validation ../data/val_large/ --test ../data/benchmarks/Set5/  --log_test_path ./test/ --scale 4 --scaleFrom 2 --stage all
 
 # Train the 8X SRGAN
-python train.py --train C:/Documents/Kaggle/Kaggle-imagenet/input/DET/train --validation C:/Documents/Kaggle/Kaggle-imagenet/input/DET/test --scale 8 --test_path images/samples_8X --scaleFrom 4
+python3 train.py --train ../../data/train_large/ --validation ../data/val_large/ --test ../data/benchmarks/Set5/  --log_test_path ./test/ --scale 8 --scaleFrom 4 --stage all
 """
 
 def parse_args():
     parser = ArgumentParser(description='Training script for SRGAN')
 
     parser.add_argument(
-        '-stage', '--stage',
+        '-s', '--stage',
         type=str, default='all',
         help='Which stage of training to run',
         choices=['all', 'mse', 'gan', 'gan-finetune']
     )
 
     parser.add_argument(
-        '-train', '--train',
-        type=str,
+        '-e', '--epochs',
+        type=int, default=1000000,
+        help='Number epochs per train'
+    )
+
+    parser.add_argument(
+        '-fe', '--first_epoch',
+        type=int, default=0,
+        help='Number of the first epoch to start in logs train'
+    )
+
+    parser.add_argument(
+        '-t', '--train',
+        type=str, default='../../data/train_large/',
         help='Folder with training images'
     )
-    
+
     parser.add_argument(
-        '-validation', '--validation',
-        type=str,
+        '-spe', '--steps_per_epoch',
+        type=int, default=2000,
+        help='Steps per epoch'
+    )
+
+    parser.add_argument(
+        '-v', '--validation',
+        type=str, default='../data/val_large/',
         help='Folder with validation images'
     )
 
     parser.add_argument(
-        '-test', '--test',
-        type=str, default='./images/samples_HR',
+        '-spv', '--steps_per_validation',
+        type=int, default=10,
+        help='Steps per validation'
+    )
+
+    parser.add_argument(
+        '-te', '--test',
+        type=str, default='../data/benchmarks/Set5/',
         help='Folder with testing images'
     )
-        
+
     parser.add_argument(
-        '-dataname', '--dataname',
-        type=str, default='imagenet',
-        help='Dataset name, e.g. \'imagenet\''
+        '-pf', '--print_frequency',
+        type=int, default=10,
+        help='Frequency of print test images'
     )
         
     parser.add_argument(
-        '-scale', '--scale',
+        '-sc', '--scale',
         type=int, default=2,
         help='How much should we upscale images'
     )
 
     parser.add_argument(
-        '-scaleFrom', '--scaleFrom',
+        '-scf', '--scaleFrom',
         type=int, default=None,
         help='Perform transfer learning from lower-upscale model'
     )
         
     parser.add_argument(
-        '-workers', '--workers',
+        '-w', '--workers',
         type=int, default=4,
         help='How many workers to user for pre-processing'
     )
+
+    parser.add_argument(
+        '-mqs', '--max_queue_size',
+        type=int, default=1000,
+        help='Max queue size to workers'
+    )
         
     parser.add_argument(
-        '-batch_size', '--batch_size',
+        '-bs', '--batch_size',
         type=int, default=16,
         help='What batch-size should we use'
     )
 
     parser.add_argument(
-        '-crops_per_image', '--crops_per_image',
-        type=int, default=2,
+        '-cpi', '--crops_per_image',
+        type=int, default=4,
         help='Increase in order to reduce random reads on disk (in case of slower SDDs or HDDs)'
     )
-            
-    parser.add_argument(
-        '-test_path', '--test_path',
-        type=str, default='./images/samples_2X/',
-        help='Where to output test images during training'
-    )
         
     parser.add_argument(
-        '-weight_path', '--weight_path',
-        type=str, default='./data/weights/',
+        '-wp', '--weight_path',
+        type=str, default='./model/',
         help='Where to output weights during training'
     )
-        
+
     parser.add_argument(
-        '-log_path', '--log_path',
-        type=str, default='./data/logs/',
-        help='Where to output tensorboard logs during training'
+        '-lwf', '--log_weight_frequency',
+        type=int, default=1,
+        help='Where to output weights during training'
+    )
+
+    parser.add_argument(
+        '-ltf', '--log_test_frequency',
+        type=int, default=30,
+        help='Frequency to output test'
+    )
+
+    parser.add_argument(
+        '-ltuf', '--log_tensorboard_update_freq',
+        type=int, default=10,
+        help='Frequency of update tensorboard weight'
     )
         
+    parser.add_argument(
+        '-lp', '--log_path',
+        type=str, default='./logs/',
+        help='Where to output tensorboard logs during training'
+    )
+
+    parser.add_argument(
+        '-ltp', '--log_test_path',
+        type=str, default='./test/',
+        help='Path to generate images in train'
+    )
+
+    parser.add_argument(
+        '-hlr', '--height_lr',
+        type=int, default=48,
+        help='height of lr crop'
+    )
+
+    parser.add_argument(
+        '-wlr', '--width_lr',
+        type=int, default=48,
+        help='width of lr crop'
+    )
+
+    parser.add_argument(
+        '-c', '--channels',
+        type=int, default=3,
+        help='channels of images'
+    )
+
+    parser.add_argument(
+        '-cs', '--colorspace',
+        type=str, default='RGB',
+        help='Colorspace of images, e.g., RGB or YYCbCr'
+    )
+
+    parser.add_argument(
+        '-mt', '--media_type',
+        type=str, default='i',
+        help='Type of media i to image or v to video'
+    )
+
+    parser.add_argument(
+        '-mn', '--modelname',
+        type=str, default='_places365',
+        help='Name for the model'
+    )
+     
     return  parser.parse_args()
 
 def reset_layer_names(args):
@@ -120,15 +206,15 @@ def reset_layer_names(args):
     loads the weights onto that network, and saves the weights again with proper names'''
 
     # Find lower-upscaling model results
-    BASE_G = os.path.join(args.weight_path, 'SRGAN_'+args.dataname+'_generator_'+str(args.scaleFrom)+'X.h5')
-    BASE_D = os.path.join(args.weight_path, 'SRGAN_'+args.dataname+'_discriminator_'+str(args.scaleFrom)+'X.h5')
+    BASE_G = os.path.join(args.weight_path, 'SRGAN'+args.modelname+'_generator_'+str(args.scaleFrom)+'X.h5')
+    BASE_D = os.path.join(args.weight_path, 'SRGAN'+args.modelname+'_discriminator_'+str(args.scaleFrom)+'X.h5')
     assert os.path.isfile(BASE_G), 'Could not find '+BASE_G
     assert os.path.isfile(BASE_D), 'Could not find '+BASE_D
     
     # Load previous model with weights, and re-save weights so that name ordering will match new model
     prev_gan = SRGAN(upscaling_factor=args.scaleFrom)
     prev_gan.load_weights(BASE_G, BASE_D)
-    prev_gan.save_weights(args.weight_path+'SRGAN_'+args.dataname)
+    prev_gan.save_weights(args.weight_path+'SRGAN{}'.format(args.modelname))
     del prev_gan
     K.reset_uids()
     gc.collect()
@@ -155,26 +241,26 @@ def gan_freeze_layers(args, gan):
     # Compile generator with frozen layers
     gan.compile_generator(gan.generator)
 
-def gan_train(args, gan, common, first_epoch=1000000):
+def train_generator(args, gan, common, epochs=None):
     '''Just a convenience function for training the GAN'''
-    gan.train_srgan(
-        epochs=100000,
-        dataname='SRGAN_'+args.dataname,
-        print_frequency=10000,    
-        log_weight_frequency=5000,
-        log_tensorboard_name='SRGAN_'+args.dataname,
-        log_test_frequency=10000,
-        first_epoch=1000000,
+    print("TRAINING GENERATOR ONLY WITH MSE LOSS")
+    gan.train_generator(
+        epochs=epochs,
+        modelname='SRResNet'+args.modelname,        
+        steps_per_epoch=args.steps_per_epoch,                
         **common
     )
 
-def generator_train(args, gan, common, epochs=1):
+
+def train_gan(args, gan, common, epochs=None):
     '''Just a convenience function for training the GAN'''
-    gan.train_generator(
-        epochs=1,
-        dataname='SRResNet'+args.dataname,        
-        steps_per_epoch=100000,        
-        log_tensorboard_name='SRResNet'+args.dataname,        
+    
+    gan.train_srgan(
+        epochs=epochs,
+        modelname='SRGAN'+args.modelname,    
+        log_weight_frequency=args.log_weight_frequency,
+        log_test_frequency=args.log_test_frequency,
+        first_epoch=args.first_epoch,
         **common
     )
 
@@ -185,71 +271,86 @@ if __name__ == '__main__':
     args = parse_args()
        
     # Common settings for all training stages
-    common = {
+    args_train = { 
         "batch_size": args.batch_size, 
+        "steps_per_validation": args.steps_per_validation,
+        "crops_per_image": args.crops_per_image,
+        "print_frequency": args.print_frequency,
+        "log_tensorboard_update_freq": args.log_tensorboard_update_freq,
         "workers": args.workers,
+        "max_queue_size": args.max_queue_size,
         "datapath_train": args.train,
         "datapath_validation": args.validation,
-        "datapath_test":args.test,
-        "steps_per_validation": 5000,
+        "datapath_test": args.test,
         "log_weight_path": args.weight_path, 
         "log_tensorboard_path": args.log_path,        
-        "log_tensorboard_update_freq": 1000,
-        "log_test_path": args.test_path,
-        "crops_per_image": args.crops_per_image        
+        "log_test_path": args.log_test_path,        
+        "media_type": args.media_type
+    }
+
+    # Specific of the model
+    args_model = {
+        "height_lr": args.height_lr, 
+        "width_lr": args.width_lr, 
+        "channels": args.channels,
+        "upscaling_factor": args.scale, 
+        "colorspace": args.colorspace,        
     }
 
     # Generator weight paths
-    srresnet_path = os.path.join(args.weight_path, 'SRResNet_'+args.dataname+'_{}X'.format(args.scale))
-    srrgan_G_path = os.path.join(args.weight_path, 'SRGAN_'+args.dataname+'_generator_'+str(args.scale)+'X.h5')
-    srrgan_D_path = os.path.join(args.weight_path, 'SRGAN_'+args.dataname+'_discriminator_'+str(args.scale)+'X.h5')
-
+    srresnet_path = os.path.join(args.weight_path, 'SRResNet{}_{}X.h5'.format(args.modelname,args.scale))
+    srrgan_G_path = os.path.join(args.weight_path, 'SRGAN{}_generator_{}X.h5'.format(args.modelname,args.scale))
+    srrgan_D_path = os.path.join(args.weight_path, 'SRGAN{}_discriminator_{}X.h5'.format(args.modelname,args.scale))
+    # Generator weight paths
+    
     ## FIRST STAGE: TRAINING GENERATOR ONLY WITH MSE LOSS
     ######################################################
 
     # If we are doing transfer learning, only train top layer of the generator
     # And load weights from lower-upscaling model    
     if args.stage in ['all', 'mse']:
+        
         if args.scaleFrom:
-
+            print("TRANSFERING LEARN")
             # Ensure proper layer names
             BASE_G, BASE_D = reset_layer_names(args)
 
             # Load the properly named weights onto this model and freeze lower-level layers
-            gan = SRGAN(upscaling_factor=args.scale)
+            gan = SRGAN(gen_lr=1e-4, **args_model)
+                
             gan.load_weights(BASE_G, BASE_D, by_name=True)
             gan_freeze_layers(args, gan)
-            generator_train(args, gan, common, 1)
+            train_generator(args, gan, args_train, epochs=3)
 
             # Train entire generator for 3 epochs
-            gan = SRGAN(upscaling_factor=args.scale)
+            gan = SRGAN(gen_lr=1e-4, **args_model)
             gan.load_weights(srresnet_path)
-            generator_train(args, gan, common, 3)
-        
-        else:
-
+            train_generator(args, gan, args_train, epochs=3)
+        else: 
             # As in paper - train for 10 epochs
-            gan = SRGAN(upscaling_factor=args.scale)    
-            generator_train(args, gan, common, 10)        
+            gan = SRGAN(gen_lr=1e-4, **args_model)
+	        #gan.load_weights(srresnet_path)#Teste 
+            train_generator(args, gan, args_train, epochs=args.epochs)        
 
     ## SECOND STAGE: TRAINING GAN WITH HIGH LEARNING RATE
     ######################################################
 
     # Re-initialize & train the GAN - load just created generator weights
     if args.stage in ['all', 'gan']:
-        gan = SRGAN(upscaling_factor=args.scale)
+        gan = SRGAN(gen_lr=1e-4, dis_lr=1e-4, loss_weights=[0.006, 1e-3],
+            **args_model)
         gan.load_weights(srresnet_path)
-        gan_train(args, gan, common, 1000000)
+        print("TRAINING GAN WITH HIGH LEARNING RATE")
+        train_gan(args, gan, args_train, epochs= args.epochs//10 if args.epochs == int(1e6) else args.epochs )
 
     ## THIRD STAGE: FINE TUNE GAN WITH LOW LEARNING RATE
     ######################################################
         
     # Re-initialize & fine-tune GAN - load generator & discriminator weights
-    if args.stage in ['all', 'gan-finetune']:
-        gan = SRGAN(
-            gen_lr=1e-5, dis_lr=1e-5,
-            upscaling_factor=args.scale
+    if args.stage in ['all', 'gan-finetune']:        
+        gan = SRGAN(gen_lr=1e-5, dis_lr=1e-5, loss_weights=[0.006, 1e-3],
+            **args_model
         )
         gan.load_weights(srrgan_G_path, srrgan_D_path)
-        gan_train(args, gan, common, 1100000)
-        
+        print("FINE TUNE GAN WITH LOW LEARNING RATE")
+        train_gan(args, gan, args_train, epochs=args.epochs//10 if args.epochs == int(1e6) else args.epochs)
