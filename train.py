@@ -329,7 +329,7 @@ if __name__ == '__main__':
         else: 
             # As in paper - train for 10 epochs
             gan = SRGAN(gen_lr=1e-4, **args_model)
-	        #gan.load_weights(srresnet_path)#Teste 
+            #gan.load_weights(srresnet_path)#Teste 
             train_generator(args, gan, args_train, epochs=args.epochs)        
 
     ## SECOND STAGE: TRAINING GAN WITH HIGH LEARNING RATE

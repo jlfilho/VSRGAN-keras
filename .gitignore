@@ -104,6 +104,14 @@ ENV/
 .vscode/*
 
 # Do not track local files
-datasets/*
-sample-epoch*
-data/weights/SR*
+# Translations
+# mypy
+.mypy_cache/
+
+output/
+test/
+validation/
+data/
+out/
+logs/
+model/
