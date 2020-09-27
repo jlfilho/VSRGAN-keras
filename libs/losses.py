@@ -51,7 +51,7 @@ class VGGLossNoActivation(object):
         
     # computes VGG loss or content loss
     def content_loss(self, y_true, y_pred):
-        return 1e-5 * K.mean(K.square(self.model(self.preprocess_vgg(y_true)) - self.model(self.preprocess_vgg(y_pred))),None)
+        return K.mean(K.square(self.model(self.preprocess_vgg(y_true)) - self.model(self.preprocess_vgg(y_pred))),None)
     
     def euclidean_content_loss(self, y_true, y_pred):
         return K.sqrt(K.sum(K.square(self.model(self.preprocess_vgg(y_true)) - self.model(self.preprocess_vgg(y_pred))), axis=None))
@@ -138,6 +138,9 @@ def poisson(y_true, y_pred):
 def mean_absolute_error(y_true, y_pred):
     return K.mean(K.abs(y_pred - y_true), axis=-1)
 
+def L1Loss(y_true, y_pred):
+    return K.sum(K.abs(y_pred - y_true), None)
+
 def mean_absolute_percentage_error(y_true, y_pred):
     diff = K.abs((y_true - y_pred) / K.clip(K.abs(y_true),
                                             K.epsilon(),
@@ -161,7 +164,7 @@ def kullback_leibler_divergence(y_true, y_pred):
     return K.sum(y_true * K.log(y_true / y_pred), axis=-1)
 
 def binary_crossentropy(y_true, y_pred):
-    return K.mean(K.binary_crossentropy(y_true, y_pred), axis=-1)
+    return K.mean(K.binary_crossentropy(y_true, y_pred,from_logits=True), axis=-1)
 
 def euclidean_loss(y_true, y_pred):
     return K.sqrt(K.sum(K.square(y_pred - y_true), axis=None))

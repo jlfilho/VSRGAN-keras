@@ -73,10 +73,9 @@ class DataLoader(Sequence):
     @staticmethod
     def unscale_lr_imgs(imgs):
         """Un-Scale low-res images"""
-        pre = imgs * 255
-        pre[pre[:] > 255] = 255
-        pre[pre[:] < 0] = 0
-        return pre
+        imgs = imgs * 255
+        imgs = np.clip(imgs, 0., 255.)
+        return imgs.astype('uint8')
     
     @staticmethod
     def scale_hr_imgs(imgs):
@@ -86,11 +85,11 @@ class DataLoader(Sequence):
     @staticmethod
     def unscale_hr_imgs(imgs):
         """Un-Scale high-res images"""
-        pre = (imgs + 1.) * 127.5
-        pre[pre[:] > 255] = 255
-        pre[pre[:] < 0] = 0
-        return pre 
-    
+        imgs = (imgs + 1.) * 127.5
+        imgs = np.clip(imgs, 0., 255.)        
+        return imgs.astype('uint8') 
+
+
     def count_frames(self,videopath):
         '''Count total frames in video'''
         cap = cv2.VideoCapture(videopath)
@@ -400,7 +399,7 @@ def plot_test_images(model, loader, datapath_test, test_output, epoch, name='SRG
             fig, axes = plt.subplots(1, 4, figsize=(40, 10))
             for i, (title, img) in enumerate(images.items()):
                 axes[i].imshow(img[0])
-                axes[i].set_title("{} - {} {}".format(title, img[0].shape, ("- psnr: "+str(round(psnr(img[0],img[1],255.),2)) if (title == name or title == 'Bicubic' ) else " ")))
+                axes[i].set_title("{} - {} {}".format(title+'_'+str(loader.scale)+'x', img[0].shape, ("- psnr: "+str(round(psnr(img[0],img[1],255.),2)) if (title == name or title == 'Bicubic' ) else " ")))
                 #axes[i].set_title("{} - {}".format(title, img.shape))
                 axes[i].axis('off')
             plt.suptitle('{} - Epoch: {}'.format(filename, epoch))
@@ -410,6 +409,6 @@ def plot_test_images(model, loader, datapath_test, test_output, epoch, name='SRG
             fig.savefig(savefile)
             plt.close()
             gc.collect()
-        print('test {} psnr: {} - test bi psnr: {}'.format(name,np.mean(srgan_psnr),np.mean(bi_psnr)))
+        print('>> Test {} psnr: {} - test bi psnr: {}'.format(name,np.mean(srgan_psnr),np.mean(bi_psnr)))
     except Exception as e:
         print(e)

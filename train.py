@@ -14,25 +14,25 @@ import matplotlib.pyplot as plt
 # Import backend without the "Using X Backend" message
 from argparse import ArgumentParser
 from PIL import Image
-from srgan import SRGAN
+from esrgan import ESRGAN
 from util import plot_test_images, DataLoader
 from keras import backend as K
 
 
 # Sample call
 """
-# Train 2X SRGAN
+# Train 2X ESRGAN
 python3 train.py --train ../../data/train_large/ --validation ../data/val_large/ --test ../data/benchmarks/Set5/  --log_test_path ./test/ --scale 2 --stage all
 
-# Train the 4X SRGAN
+# Train the 4X ESRGAN
 python3 train.py --train ../../data/train_large/ --validation ../data/val_large/ --test ../data/benchmarks/Set5/  --log_test_path ./test/ --scale 4 --scaleFrom 2 --stage all
 
-# Train the 8X SRGAN
+# Train the 8X ESRGAN
 python3 train.py --train ../../data/train_large/ --validation ../data/val_large/ --test ../data/benchmarks/Set5/  --log_test_path ./test/ --scale 8 --scaleFrom 4 --stage all
 """
 
 def parse_args():
-    parser = ArgumentParser(description='Training script for SRGAN')
+    parser = ArgumentParser(description='Training script for ESRGAN')
 
     parser.add_argument(
         '-s', '--stage',
@@ -109,7 +109,7 @@ def parse_args():
 
     parser.add_argument(
         '-mqs', '--max_queue_size',
-        type=int, default=1000,
+        type=int, default=100,
         help='Max queue size to workers'
     )
         
@@ -163,13 +163,13 @@ def parse_args():
 
     parser.add_argument(
         '-hlr', '--height_lr',
-        type=int, default=48,
+        type=int, default=64,
         help='height of lr crop'
     )
 
     parser.add_argument(
         '-wlr', '--width_lr',
-        type=int, default=48,
+        type=int, default=64,
         help='width of lr crop'
     )
 
@@ -206,15 +206,15 @@ def reset_layer_names(args):
     loads the weights onto that network, and saves the weights again with proper names'''
 
     # Find lower-upscaling model results
-    BASE_G = os.path.join(args.weight_path, 'SRGAN'+args.modelname+'_generator_'+str(args.scaleFrom)+'X.h5')
-    BASE_D = os.path.join(args.weight_path, 'SRGAN'+args.modelname+'_discriminator_'+str(args.scaleFrom)+'X.h5')
+    BASE_G = os.path.join(args.weight_path, 'ESRGAN'+args.modelname+'_generator_'+str(args.scaleFrom)+'X.h5')
+    BASE_D = os.path.join(args.weight_path, 'ESRGAN'+args.modelname+'_discriminator_'+str(args.scaleFrom)+'X.h5')
     assert os.path.isfile(BASE_G), 'Could not find '+BASE_G
     assert os.path.isfile(BASE_D), 'Could not find '+BASE_D
     
     # Load previous model with weights, and re-save weights so that name ordering will match new model
-    prev_gan = SRGAN(upscaling_factor=args.scaleFrom)
+    prev_gan = ESRGAN(upscaling_factor=args.scaleFrom)
     prev_gan.load_weights(BASE_G, BASE_D)
-    prev_gan.save_weights(args.weight_path+'SRGAN{}'.format(args.modelname))
+    prev_gan.save_weights(args.weight_path+'ESRGAN{}'.format(args.modelname))
     del prev_gan
     K.reset_uids()
     gc.collect()
@@ -255,9 +255,9 @@ def train_generator(args, gan, common, epochs=None):
 def train_gan(args, gan, common, epochs=None):
     '''Just a convenience function for training the GAN'''
     
-    gan.train_srgan(
+    gan.train_esrgan(
         epochs=epochs,
-        modelname='SRGAN'+args.modelname,    
+        modelname='ESRGAN'+args.modelname,    
         log_weight_frequency=args.log_weight_frequency,
         log_test_frequency=args.log_test_frequency,
         first_epoch=args.first_epoch,
@@ -299,8 +299,8 @@ if __name__ == '__main__':
 
     # Generator weight paths
     srresnet_path = os.path.join(args.weight_path, 'SRResNet{}_{}X.h5'.format(args.modelname,args.scale))
-    srrgan_G_path = os.path.join(args.weight_path, 'SRGAN{}_generator_{}X.h5'.format(args.modelname,args.scale))
-    srrgan_D_path = os.path.join(args.weight_path, 'SRGAN{}_discriminator_{}X.h5'.format(args.modelname,args.scale))
+    srrgan_G_path = os.path.join(args.weight_path, 'ESRGAN{}_generator_{}X.h5'.format(args.modelname,args.scale))
+    srrgan_D_path = os.path.join(args.weight_path, 'ESRGAN{}_discriminator_{}X.h5'.format(args.modelname,args.scale))
     # Generator weight paths
     
     ## FIRST STAGE: TRAINING GENERATOR ONLY WITH MSE LOSS
@@ -316,19 +316,19 @@ if __name__ == '__main__':
             BASE_G, BASE_D = reset_layer_names(args)
 
             # Load the properly named weights onto this model and freeze lower-level layers
-            gan = SRGAN(gen_lr=1e-4, **args_model)
+            gan = ESRGAN(gen_lr=1e-4, **args_model)
                 
             gan.load_weights(BASE_G, BASE_D, by_name=True)
             gan_freeze_layers(args, gan)
             train_generator(args, gan, args_train, epochs=3)
 
             # Train entire generator for 3 epochs
-            gan = SRGAN(gen_lr=1e-4, **args_model)
+            gan = ESRGAN(gen_lr=1e-4, **args_model)
             gan.load_weights(srresnet_path)
             train_generator(args, gan, args_train, epochs=3)
         else: 
             # As in paper - train for 10 epochs
-            gan = SRGAN(gen_lr=1e-4, **args_model)
+            gan = ESRGAN(gen_lr=2*1e-4, **args_model)
             #gan.load_weights(srresnet_path)#Teste 
             train_generator(args, gan, args_train, epochs=args.epochs)        
 
@@ -337,20 +337,9 @@ if __name__ == '__main__':
 
     # Re-initialize & train the GAN - load just created generator weights
     if args.stage in ['all', 'gan']:
-        gan = SRGAN(gen_lr=1e-4, dis_lr=1e-4, loss_weights=[0.006, 1e-3],
+        gan = ESRGAN(gen_lr=1e-4, dis_lr=1e-4, ra_lr = 1e-4, loss_weights=[1., 5e-3,1e-2],
             **args_model)
         gan.load_weights(srresnet_path)
+        #gan.load_weights(srrgan_G_path, srrgan_D_path)
         print("TRAINING GAN WITH HIGH LEARNING RATE")
-        train_gan(args, gan, args_train, epochs= args.epochs//10 if args.epochs == int(1e6) else args.epochs )
-
-    ## THIRD STAGE: FINE TUNE GAN WITH LOW LEARNING RATE
-    ######################################################
-        
-    # Re-initialize & fine-tune GAN - load generator & discriminator weights
-    if args.stage in ['all', 'gan-finetune']:        
-        gan = SRGAN(gen_lr=1e-5, dis_lr=1e-5, loss_weights=[0.006, 1e-3],
-            **args_model
-        )
-        gan.load_weights(srrgan_G_path, srrgan_D_path)
-        print("FINE TUNE GAN WITH LOW LEARNING RATE")
-        train_gan(args, gan, args_train, epochs=args.epochs//10 if args.epochs == int(1e6) else args.epochs)
+        train_gan(args, gan, args_train, epochs= args.epochs//10 if args.epochs == int(4e5) else args.epochs)

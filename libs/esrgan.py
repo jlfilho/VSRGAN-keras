@@ -15,26 +15,30 @@ import numpy as np
 import restore
 
 from keras.models import Model
-from keras.layers import Input, Add, BatchNormalization
-from keras.layers import LeakyReLU, Conv2D, Dense, PReLU, Lambda
+from keras.layers import Input, Add, BatchNormalization, Concatenate    
+from keras.layers import LeakyReLU, Conv2D, Dense, PReLU, Lambda, Dropout
 from keras.optimizers import Adam
+from keras.activations import sigmoid
+from keras.initializers import VarianceScaling
 #from keras.utils.data_utils import OrderedEnqueuer, SequenceEnqueuer, GeneratorEnqueuer
 from tensorflow.keras.utils import OrderedEnqueuer, GeneratorEnqueuer, SequenceEnqueuer
 from keras.callbacks import TensorBoard, ModelCheckpoint, LambdaCallback
-from keras.callbacks import ReduceLROnPlateau, EarlyStopping
+from keras.callbacks import ReduceLROnPlateau, EarlyStopping, LearningRateScheduler
 from keras import backend as K
 from tqdm import tqdm
 
 from util import DataLoader, plot_test_images 
 
 from losses import psnr3 as psnr
-from losses import VGGLoss
+from losses import binary_crossentropy
+from losses import L1Loss
+from losses import VGGLossNoActivation as VGGLoss
 
 
 
-class SRGAN():
+class ESRGAN():
     """ 
-    Implementation of SRGAN as described in the paper:
+    Implementation of ESRGAN as described in the paper:
     Photo-Realistic Single Image Super-Resolution Using a Generative Adversarial Network
     https://arxiv.org/abs/1609.04802
     """
@@ -42,7 +46,8 @@ class SRGAN():
     def __init__(self, 
         height_lr=24, width_lr=24, channels=3,
         upscaling_factor=4, 
-        gen_lr=1e-4, dis_lr=1e-4, loss_weights=[0.006, 1e-3], 
+        gen_lr=1e-4, dis_lr=1e-4, ra_lr = 1e-4, 
+        loss_weights=[1e-3, 5e-3,1e-2], 
         training_mode=True,
         colorspace = 'RGB'
     ):
@@ -79,14 +84,17 @@ class SRGAN():
         # Learning rates
         self.gen_lr = gen_lr
         self.dis_lr = dis_lr
+        self.ra_lr = ra_lr
         
         # Gan setup settings
         self.loss_weights=loss_weights
         self.VGGLoss = VGGLoss(self.shape_hr)
-        self.gen_loss =  'mse' 
-        self.content_loss = self.VGGLoss.content_loss # self.VGGLoss.euclidean_content_loss
-        self.adversarial_loss = 'binary_crossentropy'
+        self.gen_loss =  L1Loss 
+        self.content_loss = self.VGGLoss.content_loss 
+        self.adversarial_loss = binary_crossentropy
+        self.ra_loss = binary_crossentropy
         
+        [self.content_loss,self.adversarial_loss,self.gen_loss]
         # Build & compile the generator network
         self.generator = self.build_generator()
         self.compile_generator(self.generator)
@@ -95,8 +103,10 @@ class SRGAN():
         if training_mode:
             self.discriminator = self.build_discriminator()
             self.compile_discriminator(self.discriminator)
-            self.srgan = self.build_srgan()
-            self.compile_srgan(self.srgan)
+            self.ra_discriminator = self.build_ra_discriminator()
+            self.compile_ra_discriminator(self.ra_discriminator)
+            self.esrgan = self.build_esrgan()
+            self.compile_esrgan(self.esrgan)
 
 
     def save_weights(self, filepath):
@@ -142,20 +152,60 @@ class SRGAN():
         :param int residual_blocks: How many residual blocks to use
         :return: the compiled model
         """
+        varscale = 0.5
 
         def residual_block(input):
             x = Conv2D(64, kernel_size=3, strides=1, padding='same')(input)
-            if self.training_mode:
-                x = BatchNormalization(momentum=0.8)(x)
             x = PReLU(shared_axes=[1,2])(x)            
             x = Conv2D(64, kernel_size=3, strides=1, padding='same')(x)
-            if self.training_mode:
-                x = BatchNormalization(momentum=0.8)(x)
             x = Add()([x, input])
             return x
 
+
+        def dense_block(model,kernal_size, filters, strides):
+            x1 = Conv2D(filters, kernel_size=kernal_size, strides=strides, 
+            kernel_initializer=VarianceScaling(scale=varscale, mode='fan_in', distribution='normal', seed=None),
+            padding='same')(model)
+            x1 = LeakyReLU(0.2)(x1)
+            x1 = Concatenate()([model, x1])
+
+            x2 = Conv2D(64, kernel_size=3, strides=1, 
+            kernel_initializer=VarianceScaling(scale=varscale, mode='fan_in', distribution='normal', seed=None),
+            padding='same')(x1)
+            x2 = LeakyReLU(0.2)(x2)
+            x2 = Concatenate()([model, x1, x2])
+
+            x3 = Conv2D(64, kernel_size=3, strides=1, 
+            kernel_initializer=VarianceScaling(scale=varscale, mode='fan_in', distribution='normal', seed=None),
+            padding='same')(x2)
+            x3 = LeakyReLU(0.2)(x3)
+            x3 = Concatenate()([model, x1, x2, x3])
+
+            x4 = Conv2D(64, kernel_size=3, strides=1, 
+            kernel_initializer=VarianceScaling(scale=varscale, mode='fan_in', distribution='normal', seed=None),
+            padding='same')(x3)
+            x4 = LeakyReLU(0.2)(x4)
+            x4 = Concatenate()([model, x1, x2, x3, x4])  # 这里跟论文原图有冲突，论文没x3???
+
+            x5 = Conv2D(64, kernel_size=3, strides=1, 
+            kernel_initializer=VarianceScaling(scale=varscale, mode='fan_in', distribution='normal', seed=None),
+            padding='same')(x4)
+            x5 = Lambda(lambda x: x * 0.2)(x5) 
+            x = Add()([x5, model])
+            return x
+
+        def RRDB(model,filters, kernal_size, strides,rrdb_number=23):
+            x = dense_block(model,kernal_size, filters, strides)
+            for i in range(rrdb_number-1):
+                x = dense_block(x,kernal_size, filters, strides)
+            x = Lambda(lambda x: x * 0.2)(x)
+            x = Add()([x, model])
+            return x
+
         def upsample(x, number):
-            x = Conv2D(256, kernel_size=3, strides=1, padding='same', name='upSample_Conv2d_'+str(number))(x)
+            x = Conv2D(256, kernel_size=3, strides=1, padding='same', 
+            kernel_initializer=VarianceScaling(scale=varscale, mode='fan_in', distribution='normal', seed=None),
+            name='upSample_Conv2d_'+str(number))(x)
             x = self.SubpixelConv2D('upSample_SubPixel_'+str(number), 2)(x)
             x = PReLU(shared_axes=[1,2], name='upSample_PReLU_'+str(number))(x)
             return x
@@ -164,18 +214,20 @@ class SRGAN():
         lr_input = Input(shape=(None, None, self.channels),name='Input-gen')
 
         # Pre-residual
-        x_start = Conv2D(64, kernel_size=9, strides=1, padding='same',name='Conv2d-pre')(lr_input)
+        x_start = Conv2D(64, kernel_size=9, strides=1, padding='same',
+        kernel_initializer=VarianceScaling(scale=varscale, mode='fan_in', distribution='normal', seed=None),
+        name='Conv2d-pre')(lr_input)
         x_start = PReLU(shared_axes=[1,2],name='PReLU-pre')(x_start)
 
-        # Residual blocks
-        x = residual_block(x_start)
-        for _ in range(residual_blocks - 1):
-            x = residual_block(x)
 
+        # Residual-in-Residual Dense Block (First improve)
+        x = RRDB(x_start,64, 3, 1,3)
+        
         # Post-residual block
-        x = Conv2D(64, kernel_size=3, strides=1, padding='same',name='Conv-pos')(x)
-        if self.training_mode:
-            x = BatchNormalization(momentum=0.8,name='BN-pos')(x)
+        x = Conv2D(64, kernel_size=3, strides=1, padding='same',
+        kernel_initializer=VarianceScaling(scale=varscale, mode='fan_in', distribution='normal', seed=None),
+        name='Conv-pos')(x)
+        x = Lambda(lambda x: x * 0.2)(x)
         x = Add()([x, x_start])
         
         # Upsampling depending on factor
@@ -184,22 +236,19 @@ class SRGAN():
             x = upsample(x, 2)
         if self.upscaling_factor > 4:
             x = upsample(x, 3)
-        
-        # Generate high resolution output
-        # tanh activation, see: 
-        # https://towardsdatascience.com/gan-ways-to-improve-gan-performance-acf37f9f59b
-        x = Conv2D(
-            self.channels, 
-            kernel_size=9, 
-            strides=1, 
-            padding='same', 
-            activation='tanh',name='Conv-out'
-        )(x)
+
+        x = Conv2D(64, kernel_size=3, strides=1, 
+        kernel_initializer=VarianceScaling(scale=varscale, mode='fan_in', distribution='normal', seed=None),
+        padding='same')(x)
+        x = LeakyReLU(0.2)(x)
+        x = Conv2D(self.channels, kernel_size=3, strides=1, 
+        kernel_initializer=VarianceScaling(scale=varscale, mode='fan_in', distribution='normal', seed=None),
+        padding='same', activation='tanh')(x)
+
         # Create model 
         model = Model(inputs=lr_input, outputs=x,name='Generator')        
         #model.summary()
         return model
-
   
     def build_discriminator(self, filters=64):
         """
@@ -230,41 +279,72 @@ class SRGAN():
         x = conv2d_block(x, filters*8, strides=2)
         x = Dense(filters*16)(x)
         x = LeakyReLU(alpha=0.2)(x)
-        x = Dense(1, activation='sigmoid')(x)
+        x = Dropout(0.4)(x) # new
+        x = Dense(1)(x)
 
         # Create model and compile
         model = Model(inputs=img, outputs=x,name='Discriminator')
         #model.summary()
         return model
+    
+
+    def build_ra_discriminator(self):
+        
+        def comput_Ra(x):
+            d_output1,d_output2 = x
+            real_loss = (d_output1 - K.mean(d_output2))
+            fake_loss = (d_output2 - K.mean(d_output1))
+            return sigmoid(0.5 * np.add(real_loss, fake_loss))
+
+        # Input Real and Fake images, Dra(Xr, Xf)        
+        imgs_hr = Input(shape=self.shape_hr)
+        generated_hr = Input(shape=self.shape_hr)
+
+        # C(Xr)
+        real = self.discriminator(imgs_hr)
+        # C(Xf)
+        fake = self.discriminator(generated_hr)
+
+        # Relativistic Discriminator
+        Ra_out = Lambda(comput_Ra, name='Ra_out')([real, fake])
+
+        model = Model(inputs=[imgs_hr, generated_hr], outputs=Ra_out,name='ra_discriminator')
+        #model.summary()    
+        return model
 
   
-    def build_srgan(self):
-        """Create the combined SRGAN network"""
+    def build_esrgan(self):
+        """Create the combined ESRGAN network"""
 
         # Input LR images
-        img_lr = Input(self.shape_lr,name='input_gan')
+        img_lr = Input(self.shape_lr)
+        # Input HR images
+        img_hr = Input(self.shape_hr)
 
         # Create a high resolution image from the low resolution one
         generated_hr = self.generator(img_lr)
 
+        generated2_hr = self.generator(img_lr)
+
         # In the combined model we only train the generator
         self.discriminator.trainable = False
+        self.ra_discriminator.trainable = False
 
         # Determine whether the generator HR images are OK
-        generated_check = self.discriminator(generated_hr)
+        generated_check = self.ra_discriminator([img_hr,generated_hr])
+
 
         # Create sensible names for outputs in logs
-        generated_hr = Lambda(lambda x: x, name='Content')(generated_hr)
+        generated_hr = Lambda(lambda x: x, name='Perceptual')(generated_hr)
         generated_check = Lambda(lambda x: x, name='Adversarial')(generated_check)
+        generated2_hr = Lambda(lambda x: x, name='Content')(generated2_hr)
 
         # Create model and compile
         # Using binary_crossentropy with reversed label, to get proper loss, see:
         # https://danieltakeshi.github.io/2017/03/05/understanding-generative-adversarial-networks/
-        model = Model(inputs=img_lr, outputs=[generated_hr,generated_check],name='GAN')
-        #model.summary()        
+        model = Model(inputs=[img_lr,img_hr], outputs=[generated_hr,generated_check,generated2_hr],name='GAN')
+        #model.summary()  
         return model
-
-
 
 
     def compile_generator(self, model):
@@ -282,15 +362,24 @@ class SRGAN():
             optimizer=Adam(lr=self.dis_lr, beta_1=0.9),
             metrics=['accuracy']
         )
+    
+    def compile_ra_discriminator(self, model):
+        """Compile the generator with appropriate optimizer"""
+        model.compile(
+            loss=self.ra_loss,
+            optimizer=Adam(lr=self.ra_lr, beta_1=0.9),
+            metrics=['accuracy']
+        )
 
 
-    def compile_srgan(self, model):
+    def compile_esrgan(self, model):
         """Compile the GAN with appropriate optimizer"""
         model.compile(
-            loss=[self.content_loss,self.adversarial_loss],
+            loss=[self.content_loss,self.adversarial_loss,self.gen_loss],
             loss_weights=self.loss_weights,
-            optimizer=Adam(lr=self.gen_lr, beta_1=0.9)
+            optimizer=Adam(lr=self.ra_lr, beta_1=0.9)
         )
+        
 
     def train_generator(self,
         epochs=None, batch_size=None,
@@ -365,7 +454,7 @@ class SRGAN():
         else:
             print(">> Not logging to tensorboard since no log_tensorboard_path is set")
 
-	# Callback: Stop training when a monitored quantity has stopped improving
+	    # Callback: Stop training when a monitored quantity has stopped improving
         earlystopping = EarlyStopping(
             monitor='val_loss', 
 	        patience=500, verbose=1, 
@@ -383,9 +472,19 @@ class SRGAN():
         callbacks.append(modelcheckpoint)
 
         # Callback: Reduce lr when a monitored quantity has stopped improving
-        reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=1e-1,
-                                    patience=100, min_lr=1e-6,verbose=1)
-        #callbacks.append(reduce_lr)
+        reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5,
+                                    patience=50, min_lr=1e-5,verbose=1)
+        callbacks.append(reduce_lr)
+
+        # Learning rate scheduler
+        def lr_scheduler(epoch, lr):
+            factor = 0.5
+            decay_step = 100 #100 epochs * 2000 step per epoch = 2x1e5
+            if epoch % decay_step == 0 and epoch:
+                return lr * factor
+            return lr
+        lr_scheduler = LearningRateScheduler(lr_scheduler, verbose=1)
+        callbacks.append(lr_scheduler)
 
 
         # Callback: save weights after each epoch
@@ -429,10 +528,10 @@ class SRGAN():
             validation_steps=steps_per_validation,
             callbacks=callbacks,
             use_multiprocessing=False, #workers>1 because single gpu
-            workers=workers
+            workers=1
         )
 
-    def train_srgan(self, 
+    def train_esrgan(self, 
         epochs=None, batch_size=16, 
         modelname=None, 
         datapath_train=None,
@@ -451,7 +550,7 @@ class SRGAN():
         log_test_path="./images/samples/", 
         media_type='i'        
     ):
-        """Train the SRGAN network
+        """Train the ESRGAN network
 
         :param int epochs: how many epochs to train the network for
         :param str modelname: name to use for storing model weights etc.
@@ -518,13 +617,30 @@ class SRGAN():
                 log_dir=os.path.join(log_tensorboard_path, modelname),
                 histogram_freq=0,
                 batch_size=batch_size,
-                write_graph=False,
-                write_grads=False,
+                write_graph=True,
+                write_grads=True,
                 update_freq=log_tensorboard_update_freq
             )
-            tensorboard.set_model(self.srgan)
+            tensorboard.set_model(self.esrgan)
         else:
             print(">> Not logging to tensorboard since no log_tensorboard_path is set")
+
+        # Learning rate scheduler
+        def lr_scheduler(epoch, lr):
+            factor = 0.5
+            decay_step =  [50000,100000,200000,300000]  
+            if epoch in decay_step and epoch:
+                return lr * factor
+            return lr
+        lr_scheduler_gan = LearningRateScheduler(lr_scheduler, verbose=1)
+        lr_scheduler_gan.set_model(self.esrgan)
+        lr_scheduler_gen = LearningRateScheduler(lr_scheduler, verbose=0)
+        lr_scheduler_gen.set_model(self.generator)
+        lr_scheduler_dis = LearningRateScheduler(lr_scheduler, verbose=0)
+        lr_scheduler_dis.set_model(self.discriminator)
+        lr_scheduler_ra = LearningRateScheduler(lr_scheduler, verbose=0)
+        lr_scheduler_ra.set_model(self.ra_discriminator)
+
         
         # Callback: format input value
         def named_logs(model, logs):
@@ -535,7 +651,7 @@ class SRGAN():
             return result
 
         # Shape of output from discriminator
-        disciminator_output_shape = list(self.discriminator.output_shape)
+        disciminator_output_shape = list(self.ra_discriminator.output_shape)
         disciminator_output_shape[0] = batch_size
         disciminator_output_shape = tuple(disciminator_output_shape)
 
@@ -549,47 +665,45 @@ class SRGAN():
         start_epoch = datetime.datetime.now()
         
         # Random images to go through
-        idxs = np.random.randint(0, len(train_loader), epochs)        
+        #idxs = np.random.randint(0, len(train_loader), epochs)        
         
         # Loop through epochs / iterations
         for epoch in range(first_epoch, int(epochs)+first_epoch):
+            lr_scheduler_gan.on_epoch_begin(epoch)
+            lr_scheduler_ra.on_epoch_begin(epoch)
+            lr_scheduler_dis.on_epoch_begin(epoch)
+            lr_scheduler_gen.on_epoch_begin(epoch)
 
+            print("\nEpoch {}/{}:".format(epoch+1, epochs+first_epoch))
             # Start epoch time
-            if epoch % (print_frequency + 1) == 0:
+            if epoch % print_frequency == 0:
                 start_epoch = datetime.datetime.now()            
 
             # Train discriminator 
             self.discriminator.trainable = True
-            #real = np.ones(disciminator_output_shape) - np.random.random_sample(disciminator_output_shape)*0.05
-            #fake = np.random.random_sample(disciminator_output_shape)*0.05  
-            labels = np.concatenate([real, fake])
+            self.ra_discriminator.trainable = True
+            
             imgs_lr, imgs_hr = next(output_generator)
             generated_hr = self.generator.predict(imgs_lr)
-            combined_images = np.concatenate([imgs_hr, generated_hr])
-            discriminator_loss = self.discriminator.train_on_batch(combined_images, labels)
-            #real_loss = self.discriminator.train_on_batch(imgs_hr, real)
+
+            real_loss = self.ra_discriminator.train_on_batch([imgs_hr,generated_hr], real)
             #print("Real: ",real_loss)
-            #fake_loss = self.discriminator.train_on_batch(generated_hr, fake)
+            fake_loss = self.ra_discriminator.train_on_batch([generated_hr,imgs_hr], fake)
             #print("Fake: ",fake_loss)
-            #discriminator_loss = 0.5 * np.add(real_loss, fake_loss)
-            
+            discriminator_loss = 0.5 * np.add(real_loss, fake_loss)
 
             # Train generator
             self.discriminator.trainable = False
-            #real = np.ones(disciminator_output_shape) - np.random.random_sample(disciminator_output_shape)*0.05  
-            #imgs_lr, imgs_hr = next(output_generator)
-            #gan_loss = self.srgan.train_on_batch(imgs_lr, [imgs_hr,real])
-
-            """ real = np.ones(disciminator_output_shape) - np.random.random_sample(disciminator_output_shape)*0.2 """  
+            self.ra_discriminator.trainable = False
             
-            #for _ in tqdm(range(1),ncols=1,desc=">> Training generator:"):
+            #for _ in tqdm(range(10),ncols=60,desc=">> Training generator"):
             imgs_lr, imgs_hr = next(output_generator)
-            gan_loss = self.srgan.train_on_batch(imgs_lr, [imgs_hr,real])
-
+            gan_loss = self.esrgan.train_on_batch([imgs_lr,imgs_hr], [imgs_hr,real,imgs_hr])
      
             # Callbacks
-            logs = named_logs(self.srgan, gan_loss)
+            logs = named_logs(self.esrgan, gan_loss)
             tensorboard.on_epoch_end(epoch, logs)
+            
 
             # Save losses            
             print_losses['GAN'].append(gan_loss)
@@ -599,10 +713,9 @@ class SRGAN():
             if epoch % print_frequency == 0:
                 g_avg_loss = np.array(print_losses['GAN']).mean(axis=0)
                 d_avg_loss = np.array(print_losses['D']).mean(axis=0)
-                print("\nEpoch {}/{} | Time: {}s\n>> GAN: {}\n>> Discriminator: {}".format(
-                    epoch, epochs+first_epoch,
+                print(">> Time: {}s\n>> GAN: {}\n>> Discriminator: {}".format(
                     (datetime.datetime.now() - start_epoch).seconds,
-                    ", ".join(["{}={:.4f}".format(k, v) for k, v in zip(self.srgan.metrics_names, g_avg_loss)]),
+                    ", ".join(["{}={:.4f}".format(k, v) for k, v in zip(self.esrgan.metrics_names, g_avg_loss)]),
                     ", ".join(["{}={:.4f}".format(k, v) for k, v in zip(self.discriminator.metrics_names, d_avg_loss)])
                 ))
                 print_losses = {"GAN": [], "D": []}
@@ -653,30 +766,29 @@ class SRGAN():
             return 0
         return time_elapsed
 
-# Run the SRGAN network
+# Run the ESRGAN network
 if __name__ == "__main__":
 
-    # Instantiate the SRGAN object
+    # Instantiate the ESRGAN object
     print(">> Creating the SRResNet network")
-    SRResNet = SRGAN(upscaling_factor=2,channels=3,colorspace='RGB',training_mode=True)
-    SRResNet.load_weights('../model/SRResNet_places365_2X.h5')
+    SRResNet = ESRGAN(upscaling_factor=2,channels=3,colorspace='RGB',training_mode=True)
+    SRResNet.load_weights('../model/ESRGAN_places365_discriminator_2X.h5')
     
     t = SRResNet.predict(
-            lr_path='../../../data/videos_harmonic/MYANMAR_2160p/LR/2x/myanmar01_cv_2x_qp0.mp4', 
-            sr_path='../out/myanmar01_cv_2x_qp0.mp4',
-            qp=8,
+            lr_path='/media/joao/SAMSUNG1/data/videoSRC180_1920x1080_24_mp4/videoSRC180_1920x1080_24_qp_00.mp4', 
+            sr_path='/media/joao/SAMSUNG1/data/out/VSRGAN+/videoSRC180_1920x1080_24_qp_00.mp4',
+            qp=0,
             print_frequency=1,
-            fps=30,
+            fps=24,
             media_type='v'
     )
 
 
-
-    # Train the SRGAN
-    """ gan.train_srgan(
+    # Train the ESRGAN
+    """ gan.train_esrgan(
         epochs=1000,
         batch_size=16,
-        modelname='SRGAN',
+        modelname='ESRGAN',
         datapath_train='../../../data/train_large/',
         datapath_validation='../../data/val_large/',        
         steps_per_validation=10,
