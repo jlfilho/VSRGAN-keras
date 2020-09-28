@@ -9,8 +9,8 @@ import matplotlib.pyplot as plt
 
 from PIL import Image
 from random import choice
-from keras.utils import Sequence
-from keras import backend as K
+from tensorflow.keras.utils import Sequence
+from tensorflow.keras import backend as K
 from losses import psnr2 as psnr
 
 

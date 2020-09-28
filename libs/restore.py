@@ -88,15 +88,19 @@ def write_srvideo(model=None,lr_videopath=None,sr_videopath=None,scale=None,prin
     #print(json.dumps(metadata["video"], indent=4))
     _fps = metadata['video']['@r_frame_rate'] if (fps == None) else str(fps)
     codec = 'h264_nvenc' if (gpu == 'True') else 'libx264'
-    
-    writer = skvideo.io.FFmpegWriter(sr_videopath, 
-        inputdict={'-r': _fps, '-width': str(width*scale), '-height': str(height*scale)},
+        
+    """ writer = skvideo.io.FFmpegWriter(sr_videopath, 
+        inputdict={'-r': _fps, '-width': str(width), '-height': str(height)},
         outputdict={'-vcodec': codec, '-r': _fps, '-crf': str(crf), '-pix_fmt': 'yuv420p',
-        '-b:v': selectBetterBitrate(height*scale,int(_fps.split('/')[0])/int(_fps.split('/')[1]))})
+        '-b:v': selectBetterBitrate(height*scale,int(_fps.split('/')[0])/int(_fps.split('/')[1])),'-loglevel': 'debug'}, verbosity=1) """
+    writer = skvideo.io.FFmpegWriter(sr_videopath,
+    inputdict={'-r': 24, '-width': '960', '-height': '540'},
+    outputdict={'-vcodec': 'libx264', '-r': '24', '-crf': '0', '-pix_fmt': 'yuv420p','-loglevel': 'debug'},
+    verbosity=1)
     count = 0
     time_elapsed = 0
     print(">> Writing video...")
-    for frame in tqdm(videogen):
+    for frame in tqdm(videogen.nextFrame()):
         frame = downsample(frame,scale)
         start = timer()
         img_sr = sr_genarator(model,frame,scale=scale)

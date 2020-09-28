@@ -1,13 +1,14 @@
 import cv2
 import tensorflow as tf
 import numpy as np
-import keras.backend as K
-from keras.models import Model
-from keras.optimizers import Adam
-from keras.layers import Conv2D, Lambda, MaxPooling2D
-from keras.applications.vgg19 import VGG19
-from keras.utils import data_utils as keras_utils
-from keras.applications.vgg19 import preprocess_input
+from tensorflow.keras import backend as K
+from tensorflow.keras.models import Model
+from tensorflow.keras.optimizers import SGD, Adam
+from tensorflow.keras.layers import Conv2D, Lambda, MaxPooling2D
+from tensorflow.keras.applications.vgg19 import VGG19
+from tensorflow.keras.utils import get_file
+from tensorflow.keras.applications.vgg19 import preprocess_input
+
 from skimage.measure import compare_psnr
 
 class VGGLossNoActivation(object):
@@ -33,7 +34,7 @@ class VGGLossNoActivation(object):
                       name='block5_conv4')(vgg19.get_layer('block5_conv3').output)
         #x = MaxPooling2D((2, 2), strides=(2, 2), name='block5_pool')(x)
         model = Model(inputs=vgg19.input, outputs=x)
-        weights_path = keras_utils.get_file(
+        weights_path = get_file(
                 'vgg19_weights_tf_dim_ordering_tf_kernels_notop.h5',
                 WEIGHTS_PATH_NO_TOP,
                 cache_subdir='models',

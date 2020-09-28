@@ -9,7 +9,7 @@ warnings.filterwarnings("ignore")
 #stderr = sys.stderr
 #sys.stderr = open(os.devnull, 'w')
 
-import datetime
+""" import datetime
 import tensorflow as tf
 import numpy as np
 import restore
@@ -28,6 +28,38 @@ from keras import backend as K
 from tqdm import tqdm
 
 from util import DataLoader, plot_test_images 
+
+from losses import psnr3 as psnr
+from losses import binary_crossentropy
+from losses import L1Loss
+from losses import VGGLossNoActivation as VGGLoss """
+
+
+#-------------------------------
+import os
+import logging
+import fnmatch
+import numpy as np
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
+import tensorflow as tf
+
+from tensorflow import keras
+from tensorflow.keras import layers
+from tensorflow.keras import Input
+from tensorflow.keras.layers import Dense, Conv2D, MaxPooling2D, ReLU, BatchNormalization, Add, Concatenate 
+from tensorflow.keras.layers import UpSampling2D,Conv2DTranspose, PReLU, LeakyReLU, Lambda, Dropout
+from tensorflow.keras.initializers import VarianceScaling
+from tensorflow.keras.optimizers import SGD, Adam
+from tensorflow.keras.models import Model
+from tensorflow.keras.callbacks import TensorBoard, ModelCheckpoint, LambdaCallback
+from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping
+from tensorflow.keras.initializers import RandomNormal
+from tensorflow.keras import backend as K
+from tensorflow.keras.activations import sigmoid
+
+
+import restore 
 
 from losses import psnr3 as psnr
 from losses import binary_crossentropy
@@ -139,7 +171,7 @@ class ESRGAN():
             return output_shape
 
         def subpixel(x):
-            return tf.depth_to_space(x, scale)
+            return tf.nn.depth_to_space(x, scale)
 
         return Lambda(subpixel, output_shape=subpixel_shape, name=name)
 
@@ -294,7 +326,7 @@ class ESRGAN():
             d_output1,d_output2 = x
             real_loss = (d_output1 - K.mean(d_output2))
             fake_loss = (d_output2 - K.mean(d_output1))
-            return sigmoid(0.5 * np.add(real_loss, fake_loss))
+            return sigmoid(0.5 * tf.math.add(real_loss, fake_loss))
 
         # Input Real and Fake images, Dra(Xr, Xf)        
         imgs_hr = Input(shape=self.shape_hr)
@@ -772,14 +804,14 @@ if __name__ == "__main__":
     # Instantiate the ESRGAN object
     print(">> Creating the SRResNet network")
     SRResNet = ESRGAN(upscaling_factor=2,channels=3,colorspace='RGB',training_mode=True)
-    SRResNet.load_weights('../model/ESRGAN_places365_discriminator_2X.h5')
+    SRResNet.load_weights('../model/SRResNet_places365_2X.h5')
     
     t = SRResNet.predict(
             lr_path='/media/joao/SAMSUNG1/data/videoSRC180_1920x1080_24_mp4/videoSRC180_1920x1080_24_qp_00.mp4', 
-            sr_path='/media/joao/SAMSUNG1/data/out/VSRGAN+/videoSRC180_1920x1080_24_qp_00.mp4',
+            sr_path='../out/videoSRC180_1920x1080_24_qp_00.mp4',
             qp=0,
             print_frequency=1,
-            fps=24,
+            fps=None,
             media_type='v'
     )
 
