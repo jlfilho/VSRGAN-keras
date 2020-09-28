@@ -804,7 +804,7 @@ if __name__ == "__main__":
     # Instantiate the ESRGAN object
     print(">> Creating the SRResNet network")
     SRResNet = ESRGAN(upscaling_factor=2,channels=3,colorspace='RGB',training_mode=True)
-    SRResNet.load_weights('../model/SRResNet_places365_2X.h5')
+    SRResNet.load_weights('../model/ESRGAN_places365_generator_2X.h5')
     
     t = SRResNet.predict(
             lr_path='/media/joao/SAMSUNG1/data/videoSRC180_1920x1080_24_mp4/videoSRC180_1920x1080_24_qp_00.mp4', 
