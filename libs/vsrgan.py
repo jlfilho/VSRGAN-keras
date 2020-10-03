@@ -8,37 +8,10 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 warnings.filterwarnings("ignore")
 #stderr = sys.stderr
 #sys.stderr = open(os.devnull, 'w')
-
-""" import datetime
-import tensorflow as tf
-import numpy as np
-import restore
-
-from keras.models import Model
-from keras.layers import Input, Add, BatchNormalization, Concatenate    
-from keras.layers import LeakyReLU, Conv2D, Dense, PReLU, Lambda, Dropout
-from keras.optimizers import Adam
-from keras.activations import sigmoid
-from keras.initializers import VarianceScaling
-#from keras.utils.data_utils import OrderedEnqueuer, SequenceEnqueuer, GeneratorEnqueuer
-from tensorflow.keras.utils import OrderedEnqueuer, GeneratorEnqueuer, SequenceEnqueuer
-from keras.callbacks import TensorBoard, ModelCheckpoint, LambdaCallback
-from keras.callbacks import ReduceLROnPlateau, EarlyStopping, LearningRateScheduler
-from keras import backend as K
-from tqdm import tqdm
-
-from util import DataLoader, plot_test_images 
-
-from losses import psnr3 as psnr
-from losses import binary_crossentropy
-from losses import L1Loss
-from losses import VGGLossNoActivation as VGGLoss """
-
-
 #-------------------------------
-import os
 import logging
 import fnmatch
+import datetime
 import numpy as np
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
@@ -50,16 +23,19 @@ from tensorflow.keras import Input
 from tensorflow.keras.layers import Dense, Conv2D, MaxPooling2D, ReLU, BatchNormalization, Add, Concatenate 
 from tensorflow.keras.layers import UpSampling2D,Conv2DTranspose, PReLU, LeakyReLU, Lambda, Dropout
 from tensorflow.keras.initializers import VarianceScaling
+from tensorflow.keras.utils import OrderedEnqueuer, GeneratorEnqueuer, SequenceEnqueuer
 from tensorflow.keras.optimizers import SGD, Adam
+from tensorflow.keras.activations import sigmoid
 from tensorflow.keras.models import Model
 from tensorflow.keras.callbacks import TensorBoard, ModelCheckpoint, LambdaCallback
-from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping
+from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, LearningRateScheduler
 from tensorflow.keras.initializers import RandomNormal
 from tensorflow.keras import backend as K
-from tensorflow.keras.activations import sigmoid
+from tqdm import tqdm
 
 
 import restore 
+from util import DataLoader, plot_test_images 
 
 from losses import psnr3 as psnr
 from losses import binary_crossentropy
@@ -68,11 +44,9 @@ from losses import VGGLossNoActivation as VGGLoss
 
 
 
-class ESRGAN():
+class VSRGAN():
     """ 
-    Implementation of ESRGAN as described in the paper:
-    Photo-Realistic Single Image Super-Resolution Using a Generative Adversarial Network
-    https://arxiv.org/abs/1609.04802
+    Implementation of VSRGAN+:
     """
 
     def __init__(self, 
@@ -92,8 +66,7 @@ class ESRGAN():
         :param int gen_lr: Learning rate of generator
         :param int dis_lr: Learning rate of discriminator
         """
-        
-        
+                
 
         # Low-resolution image dimensions
         self.height_lr = height_lr
@@ -137,8 +110,8 @@ class ESRGAN():
             self.compile_discriminator(self.discriminator)
             self.ra_discriminator = self.build_ra_discriminator()
             self.compile_ra_discriminator(self.ra_discriminator)
-            self.esrgan = self.build_esrgan()
-            self.compile_esrgan(self.esrgan)
+            self.vsrgan = self.build_vsrgan()
+            self.compile_vsrgan(self.vsrgan)
 
 
     def save_weights(self, filepath):
@@ -184,7 +157,7 @@ class ESRGAN():
         :param int residual_blocks: How many residual blocks to use
         :return: the compiled model
         """
-        varscale = 0.5
+        varscale = 1.
 
         def residual_block(input):
             x = Conv2D(64, kernel_size=3, strides=1, padding='same')(input)
@@ -345,8 +318,8 @@ class ESRGAN():
         return model
 
   
-    def build_esrgan(self):
-        """Create the combined ESRGAN network"""
+    def build_vsrgan(self):
+        """Create the combined VSRGAN network"""
 
         # Input LR images
         img_lr = Input(self.shape_lr)
@@ -404,7 +377,7 @@ class ESRGAN():
         )
 
 
-    def compile_esrgan(self, model):
+    def compile_vsrgan(self, model):
         """Compile the GAN with appropriate optimizer"""
         model.compile(
             loss=[self.content_loss,self.adversarial_loss,self.gen_loss],
@@ -503,31 +476,23 @@ class ESRGAN():
         )
         callbacks.append(modelcheckpoint)
 
+
         # Callback: Reduce lr when a monitored quantity has stopped improving
         reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5,
                                     patience=50, min_lr=1e-5,verbose=1)
         callbacks.append(reduce_lr)
 
+
         # Learning rate scheduler
         def lr_scheduler(epoch, lr):
-            factor = 0.5
+            factor = 0.1
             decay_step = 100 #100 epochs * 2000 step per epoch = 2x1e5
             if epoch % decay_step == 0 and epoch:
                 return lr * factor
             return lr
         lr_scheduler = LearningRateScheduler(lr_scheduler, verbose=1)
         callbacks.append(lr_scheduler)
-
-
-        # Callback: save weights after each epoch
-        modelcheckpoint = ModelCheckpoint(
-            os.path.join(log_weight_path, modelname + '_{}X.h5'.format(self.upscaling_factor)), 
-            monitor='val_loss', 
-            save_best_only=True, 
-            save_weights_only=True)
-        callbacks.append(modelcheckpoint)
  
-        
          # Callback: test images plotting
         if datapath_test is not None:
             testplotting = LambdaCallback(
@@ -563,7 +528,7 @@ class ESRGAN():
             workers=1
         )
 
-    def train_esrgan(self, 
+    def train_vsrgan(self, 
         epochs=None, batch_size=16, 
         modelname=None, 
         datapath_train=None,
@@ -582,7 +547,7 @@ class ESRGAN():
         log_test_path="./images/samples/", 
         media_type='i'        
     ):
-        """Train the ESRGAN network
+        """Train the VSRGAN network
 
         :param int epochs: how many epochs to train the network for
         :param str modelname: name to use for storing model weights etc.
@@ -633,7 +598,7 @@ class ESRGAN():
                 self.channels,
                 self.colorspace
         )
-    
+
         # Use several workers on CPU for preparing batches
         enqueuer = OrderedEnqueuer(
             train_loader,
@@ -642,7 +607,9 @@ class ESRGAN():
         )
         enqueuer.start(workers=workers, max_queue_size=max_queue_size)
         output_generator = enqueuer.get()
-        
+
+
+
         # Callback: tensorboard
         if log_tensorboard_path:
             tensorboard = TensorBoard(
@@ -653,19 +620,21 @@ class ESRGAN():
                 write_grads=True,
                 update_freq=log_tensorboard_update_freq
             )
-            tensorboard.set_model(self.esrgan)
+            tensorboard.set_model(self.vsrgan)
         else:
             print(">> Not logging to tensorboard since no log_tensorboard_path is set")
+        
+        
 
         # Learning rate scheduler
         def lr_scheduler(epoch, lr):
-            factor = 0.5
+            factor = 0.1
             decay_step =  [50000,100000,200000,300000]  
             if epoch in decay_step and epoch:
                 return lr * factor
             return lr
         lr_scheduler_gan = LearningRateScheduler(lr_scheduler, verbose=1)
-        lr_scheduler_gan.set_model(self.esrgan)
+        lr_scheduler_gan.set_model(self.vsrgan)
         lr_scheduler_gen = LearningRateScheduler(lr_scheduler, verbose=0)
         lr_scheduler_gen.set_model(self.generator)
         lr_scheduler_dis = LearningRateScheduler(lr_scheduler, verbose=0)
@@ -681,6 +650,7 @@ class ESRGAN():
             for l in zip(model.metrics_names, logs):
                 result[l[0]] = l[1]
             return result
+        
 
         # Shape of output from discriminator
         disciminator_output_shape = list(self.ra_discriminator.output_shape)
@@ -730,10 +700,10 @@ class ESRGAN():
             
             #for _ in tqdm(range(10),ncols=60,desc=">> Training generator"):
             imgs_lr, imgs_hr = next(output_generator)
-            gan_loss = self.esrgan.train_on_batch([imgs_lr,imgs_hr], [imgs_hr,real,imgs_hr])
+            gan_loss = self.vsrgan.train_on_batch([imgs_lr,imgs_hr], [imgs_hr,real,imgs_hr])
      
             # Callbacks
-            logs = named_logs(self.esrgan, gan_loss)
+            logs = named_logs(self.vsrgan, gan_loss)
             tensorboard.on_epoch_end(epoch, logs)
             
 
@@ -747,7 +717,7 @@ class ESRGAN():
                 d_avg_loss = np.array(print_losses['D']).mean(axis=0)
                 print(">> Time: {}s\n>> GAN: {}\n>> Discriminator: {}".format(
                     (datetime.datetime.now() - start_epoch).seconds,
-                    ", ".join(["{}={:.4f}".format(k, v) for k, v in zip(self.esrgan.metrics_names, g_avg_loss)]),
+                    ", ".join(["{}={:.4f}".format(k, v) for k, v in zip(self.vsrgan.metrics_names, g_avg_loss)]),
                     ", ".join(["{}={:.4f}".format(k, v) for k, v in zip(self.discriminator.metrics_names, d_avg_loss)])
                 ))
                 print_losses = {"GAN": [], "D": []}
@@ -780,7 +750,8 @@ class ESRGAN():
             print_frequency = False,
             qp = 8,
             fps = None,
-            media_type = None 
+            media_type = None,
+            gpu = False
         ):
         """ lr_videopath: path of video in low resoluiton
             sr_videopath: path to output video 
@@ -790,7 +761,7 @@ class ESRGAN():
             media_type: type of media 'v' to video and 'i' to image
         """
         if(media_type == 'v'):
-            time_elapsed = restore.write_srvideo(self.generator,lr_path,sr_path,self.upscaling_factor,print_frequency=print_frequency,crf=qp,fps=fps)
+            time_elapsed = restore.write_srvideo(self.generator,lr_path,sr_path,self.upscaling_factor,print_frequency=print_frequency,crf=qp,fps=fps,gpu=gpu)
         elif(media_type == 'i'):
             time_elapsed = restore.write_sr_images(self.generator, lr_imagepath=lr_path, sr_imagepath=sr_path,scale=self.upscaling_factor)
         else:
@@ -798,29 +769,95 @@ class ESRGAN():
             return 0
         return time_elapsed
 
-# Run the ESRGAN network
+    
+def restoration(resolution=None,k=1,qp='25'):
+    logging.basicConfig(filename='../logs/vsrgan.log', level=logging.INFO)
+    logging.info('Started')
+
+    #------------------------------------------------------
+
+    # Instantiate the TSRGAN object
+    logging.info(">> Creating the VSRGAN network")
+    # Instantiate the VSRGAN object
+    print(">> Creating the VSRGAN network")
+    vsrgan = VSRGAN(upscaling_factor=2,channels=3,colorspace='RGB',training_mode=True)
+    vsrgan.load_weights('../model/VSRGAN_places365_generator_2X.h5')
+
+
+    if(resolution==None):
+        datapath = '/media/joao/SAMSUNG1/data/videoSRC180_1920x1080_24_mp4/' 
+        outpath ='/media/joao/SAMSUNG1/data/out/VSRGAN+/'
+        lfilenames = []
+        for dirpath, _, filenames in os.walk(datapath):
+            lfilenames = [os.path.join(dirpath, f) for f in filenames if any(filetype in f.lower() for filetype in ['jpeg', 'png', 'jpg','mp4','264','webm','wma'])]
+        i=1
+        for filename in sorted(lfilenames): 
+            if(i>=k):
+                print("i={} - {} {}".format(i,filename,outpath+filename.split('/')[-1].split('.')[0]+'.mp4'))
+                t = vsrgan.predict(
+                        lr_path=filename,
+                        sr_path=outpath+filename.split('/')[-1].split('.')[0]+'.mp4',
+                        qp=i-1,
+                        media_type='v',
+                        gpu=False
+                    )
+            i+=1
+
+    if(resolution=='540p'):
+        datapath = '/media/joao/SAMSUNG2/videoset_compress/540p/' #'../../data/videoset/540p/' 
+        outpath = '/media/joao/SAMSUNG1/data/CISRDCNN-keras/out/540p_2X_qp25/' #'../out/540p_2X/'
+        lfilenames = [] 
+        for dirpath, _, filenames in os.walk(datapath):
+            item = [f for f in filenames if any(filetype in f.lower() for filetype in ['jpeg', 'png', 'jpg','mp4','264','webm','wma']) if fnmatch.fnmatch(f, '*qp_'+str(qp)+'.264')]
+            if len(item):
+                lfilenames.append(os.path.join(dirpath, item[0]))
+        i=1
+        for filename in sorted(lfilenames): 
+            if(i>=k):
+                print("i={} - {} {}".format(i,filename,outpath+filename.split('/')[-1].split('.')[0]+'.mp4'))
+                t = vsrgan.predict(
+                        lr_path=filename,
+                        sr_path=outpath+filename.split('/')[-1].split('.')[0]+'.mp4',
+                        qp=0,
+                        media_type='v',
+                        gpu=False
+                    )
+            i+=1
+
+    if(resolution=='360p'):
+        datapath = '/media/joao/SAMSUNG2/videoset_compress/360p/'#'../../data/videoset/360p/' 
+        outpath = '/media/joao/SAMSUNG1/data/CISRDCNN-keras/out/360p_2X_qp25/' #'../out/360p_2X/'
+        i=1
+        for dirpath, _, filenames in os.walk(datapath):
+            filenames = sorted([f for f in filenames if any(filetype in f.lower() for filetype in ['jpeg', 'png', 'jpg','mp4','264','webm','wma']) if fnmatch.fnmatch(f, '*qp_'+str(qp)+'.264')])
+            for filename in filenames:
+                if(i>=k):
+                    print("i={} - {}".format(i,os.path.join(dirpath, filename),outpath+filename.split('.')[0]+'.mp4'))
+                    t = vsrgan.predict(
+                            lr_path=os.path.join(dirpath, filename), 
+                            sr_path=outpath+filename.split('.')[0]+'.mp4',
+                            qp=0,
+                            media_type='v',
+                            gpu=False
+                        )
+                i+=1 
+
+    #------------------------------------------------------
+
+
+    logging.info('Finished')
+
+
+# Run the VSRGAN network
 if __name__ == "__main__":
 
-    # Instantiate the ESRGAN object
-    print(">> Creating the SRResNet network")
-    SRResNet = ESRGAN(upscaling_factor=2,channels=3,colorspace='RGB',training_mode=True)
-    SRResNet.load_weights('../model/ESRGAN_places365_generator_2X.h5')
-    
-    t = SRResNet.predict(
-            lr_path='/media/joao/SAMSUNG1/data/videoSRC180_1920x1080_24_mp4/videoSRC180_1920x1080_24_qp_00.mp4', 
-            sr_path='../out/videoSRC180_1920x1080_24_qp_00.mp4',
-            qp=0,
-            print_frequency=1,
-            fps=None,
-            media_type='v'
-    )
+    restoration()
 
-
-    # Train the ESRGAN
-    """ gan.train_esrgan(
+    # Train the VSRGAN
+    """ gan.train_vsrgan(
         epochs=1000,
         batch_size=16,
-        modelname='ESRGAN',
+        modelname='VSRGAN',
         datapath_train='../../../data/train_large/',
         datapath_validation='../../data/val_large/',        
         steps_per_validation=10,
@@ -839,7 +876,7 @@ if __name__ == "__main__":
 
     """ gan.train_generator(
         epochs=50,batch_size=16,workers=1,
-        modelname='SRResNet',
+        modelname='VSRGAN',
 	    datapath_train='../../../data/train_large/',
 	    datapath_validation='../../data/val_large/',
 	    datapath_test='../../data/benchmarks/Set5/',

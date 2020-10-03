@@ -95,7 +95,7 @@ def write_srvideo(model=None,lr_videopath=None,sr_videopath=None,scale=None,prin
         '-b:v': selectBetterBitrate(height*scale,int(_fps.split('/')[0])/int(_fps.split('/')[1])),'-loglevel': 'debug'}, verbosity=1) """
     writer = skvideo.io.FFmpegWriter(sr_videopath,
     outputdict={'-vcodec': codec, '-r': _fps, '-crf': str(crf), '-pix_fmt': 'yuv420p'},
-    verbosity=1)
+    verbosity=0)
     count = 0
     time_elapsed = 0
     print(">> Writing video...")
