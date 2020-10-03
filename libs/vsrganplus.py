@@ -245,6 +245,7 @@ class VSRGANplus():
         x = Conv2D(64, kernel_size=3, strides=1, 
         kernel_initializer=VarianceScaling(scale=varscale, mode='fan_in', distribution='normal', seed=None),
         padding='same')(x)
+
         x = LeakyReLU(0.2)(x)
         x = Conv2D(self.channels, kernel_size=3, strides=1, 
         kernel_initializer=VarianceScaling(scale=varscale, mode='fan_in', distribution='normal', seed=None),
@@ -426,7 +427,7 @@ class VSRGANplus():
                 self.height_hr, self.width_hr,
                 self.upscaling_factor,
                 crops_per_image,
-                media_type,
+                'i',
                 self.channels,
                 self.colorspace
         )
@@ -438,7 +439,7 @@ class VSRGANplus():
                 self.height_hr, self.width_hr,
                 self.upscaling_factor,
                 1,
-                media_type,
+                'i',
                 self.channels,
                 self.colorspace
         )
@@ -558,7 +559,6 @@ class VSRGANplus():
         :param str log_test_path: where should test results be saved
         :param str log_tensorboard_path: where should tensorflow logs be sent
         """
-
         
         
          # Create data loaders
@@ -580,7 +580,7 @@ class VSRGANplus():
                 self.height_hr, self.width_hr,
                 self.upscaling_factor,
                 crops_per_image,
-                media_type,
+                'i',
                 self.channels,
                 self.colorspace
         )
@@ -592,7 +592,7 @@ class VSRGANplus():
                 self.height_hr, self.width_hr,
                 self.upscaling_factor,
                 1,
-                media_type,
+                'i',
                 self.channels,
                 self.colorspace
         )
@@ -777,7 +777,8 @@ def restoration(resolution=None,k=1,qp='25'):
     # Instantiate the VSRGANplus object
     print(">> Creating the VSRGANplus network")
     vsrganplus = VSRGANplus(upscaling_factor=2,channels=3,colorspace='RGB',training_mode=True)
-    vsrganplus.load_weights('../model/VSRGANplus_places365_generator_2X.h5')
+    vsrganplus.load_weights('../model/SRResNet_places365_2X.h5')
+
 
 
     if(resolution==None):
