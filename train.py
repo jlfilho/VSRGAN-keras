@@ -22,7 +22,7 @@ from tensorflow.keras import backend as K
 # Sample call
 """
 # Train 2X VSRGANplus
-python3 train.py --train ../data/train2017/ --validation ../data/val_large/ --test ../data/benchmarks/Set5/  --log_test_path ./test/ --scale 2 --stage all
+python3 train.py --train ../data/videoset/1080p/ --validation ../data/val_large/ --test ../data/benchmarks/Set5/  --log_test_path ./test/ --steps_per_epoch 200 --scale 2 --stage all
 
 # Train the 4X VSRGANplus
 python3 train.py --train ../../data/train_large/ --validation ../data/val_large/ --test ../data/benchmarks/Set5/  --log_test_path ./test/ --scale 4 --scaleFrom 2 --stage all
@@ -139,13 +139,13 @@ def parse_args():
 
     parser.add_argument(
         '-ltf', '--log_test_frequency',
-        type=int, default=30,
+        type=int, default=1,
         help='Frequency to output test'
     )
 
     parser.add_argument(
         '-ltuf', '--log_tensorboard_update_freq',
-        type=int, default=10,
+        type=int, default=1,
         help='Frequency of update tensorboard weight'
     )
         
@@ -330,6 +330,26 @@ if __name__ == '__main__':
             # As in paper - train for 10 epochs
             gan = VSRGANplus(gen_lr=2*1e-4, **args_model)
             gan.load_weights(srresnet_path)#Teste 
+
+            #gan.generator.summary()
+
+            trainable=False
+            for layer in gan.generator.layers:
+                #print(layer.name)
+                if 'upSample_Conv2d_1' == layer.name:
+                    trainable = True
+                if 'upSample_SubPixel_1' == layer.name:
+                    trainable = True
+                if 'upSample_SubPixel_1' == layer.name:
+                    trainable = True
+                if 'conv2d_14' == layer.name:
+                    trainable = True
+                if 'conv2d_15' == layer.name:
+                    trainable = True
+                if 'conv2d_16' == layer.name:
+                    trainable = True
+                layer.trainable = trainable
+
             train_generator(args, gan, args_train, epochs=args.epochs)        
 
     ## SECOND STAGE: TRAINING GAN WITH HIGH LEARNING RATE
@@ -340,6 +360,24 @@ if __name__ == '__main__':
         gan = VSRGANplus(gen_lr=1e-4, dis_lr=1e-4, ra_lr = 1e-4, loss_weights=[1., 5e-3,1e-2],
             **args_model)
         gan.load_weights(srresnet_path)
+
+        trainable=False
+        for layer in gan.generator.layers:
+            #print(layer.name)
+            if 'upSample_Conv2d_1' == layer.name:
+                trainable = True
+            if 'upSample_SubPixel_1' == layer.name:
+                trainable = True
+            if 'upSample_SubPixel_1' == layer.name:
+                trainable = True
+            if 'conv2d_14' == layer.name:
+                trainable = True
+            if 'conv2d_15' == layer.name:
+                trainable = True
+            if 'conv2d_16' == layer.name:
+                trainable = True
+            layer.trainable = trainable
+            
         #gan.load_weights(srrgan_G_path, srrgan_D_path)
         print("TRAINING GAN WITH HIGH LEARNING RATE")
         train_gan(args, gan, args_train, epochs= args.epochs//10 if args.epochs == int(4e5) else args.epochs)
