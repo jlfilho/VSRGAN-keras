@@ -44,9 +44,9 @@ from losses import VGGLossNoActivation as VGGLoss
 
 
 
-class VSRGAN():
+class VSRGANplus():
     """ 
-    Implementation of VSRGAN+:
+    Implementation of VSRGANplus+:
     """
 
     def __init__(self, 
@@ -110,8 +110,8 @@ class VSRGAN():
             self.compile_discriminator(self.discriminator)
             self.ra_discriminator = self.build_ra_discriminator()
             self.compile_ra_discriminator(self.ra_discriminator)
-            self.vsrgan = self.build_vsrgan()
-            self.compile_vsrgan(self.vsrgan)
+            self.vsrganplus = self.build_vsrganplus()
+            self.compile_vsrganplus(self.vsrganplus)
 
 
     def save_weights(self, filepath):
@@ -318,8 +318,8 @@ class VSRGAN():
         return model
 
   
-    def build_vsrgan(self):
-        """Create the combined VSRGAN network"""
+    def build_vsrganplus(self):
+        """Create the combined VSRGANplus network"""
 
         # Input LR images
         img_lr = Input(self.shape_lr)
@@ -377,7 +377,7 @@ class VSRGAN():
         )
 
 
-    def compile_vsrgan(self, model):
+    def compile_vsrganplus(self, model):
         """Compile the GAN with appropriate optimizer"""
         model.compile(
             loss=[self.content_loss,self.adversarial_loss,self.gen_loss],
@@ -450,9 +450,7 @@ class VSRGAN():
             tensorboard = TensorBoard(
                 log_dir=os.path.join(log_tensorboard_path, modelname),
                 histogram_freq=0,
-                batch_size=batch_size,
                 write_graph=True,
-                write_grads=True,
                 update_freq=log_tensorboard_update_freq
             )
             callbacks.append(tensorboard)
@@ -517,7 +515,7 @@ class VSRGAN():
 
                             
         # Fit the model
-        self.generator.fit_generator(
+        self.generator.fit(
             output_generator,
             steps_per_epoch=steps_per_epoch,
             epochs=epochs,
@@ -528,7 +526,7 @@ class VSRGAN():
             workers=1
         )
 
-    def train_vsrgan(self, 
+    def train_vsrganplus(self, 
         epochs=None, batch_size=16, 
         modelname=None, 
         datapath_train=None,
@@ -547,7 +545,7 @@ class VSRGAN():
         log_test_path="./images/samples/", 
         media_type='i'        
     ):
-        """Train the VSRGAN network
+        """Train the VSRGANplus network
 
         :param int epochs: how many epochs to train the network for
         :param str modelname: name to use for storing model weights etc.
@@ -615,12 +613,10 @@ class VSRGAN():
             tensorboard = TensorBoard(
                 log_dir=os.path.join(log_tensorboard_path, modelname),
                 histogram_freq=0,
-                batch_size=batch_size,
                 write_graph=True,
-                write_grads=True,
                 update_freq=log_tensorboard_update_freq
             )
-            tensorboard.set_model(self.vsrgan)
+            tensorboard.set_model(self.vsrganplus)
         else:
             print(">> Not logging to tensorboard since no log_tensorboard_path is set")
         
@@ -634,7 +630,7 @@ class VSRGAN():
                 return lr * factor
             return lr
         lr_scheduler_gan = LearningRateScheduler(lr_scheduler, verbose=1)
-        lr_scheduler_gan.set_model(self.vsrgan)
+        lr_scheduler_gan.set_model(self.vsrganplus)
         lr_scheduler_gen = LearningRateScheduler(lr_scheduler, verbose=0)
         lr_scheduler_gen.set_model(self.generator)
         lr_scheduler_dis = LearningRateScheduler(lr_scheduler, verbose=0)
@@ -700,10 +696,10 @@ class VSRGAN():
             
             #for _ in tqdm(range(10),ncols=60,desc=">> Training generator"):
             imgs_lr, imgs_hr = next(output_generator)
-            gan_loss = self.vsrgan.train_on_batch([imgs_lr,imgs_hr], [imgs_hr,real,imgs_hr])
+            gan_loss = self.vsrganplus.train_on_batch([imgs_lr,imgs_hr], [imgs_hr,real,imgs_hr])
      
             # Callbacks
-            logs = named_logs(self.vsrgan, gan_loss)
+            logs = named_logs(self.vsrganplus, gan_loss)
             tensorboard.on_epoch_end(epoch, logs)
             
 
@@ -717,7 +713,7 @@ class VSRGAN():
                 d_avg_loss = np.array(print_losses['D']).mean(axis=0)
                 print(">> Time: {}s\n>> GAN: {}\n>> Discriminator: {}".format(
                     (datetime.datetime.now() - start_epoch).seconds,
-                    ", ".join(["{}={:.4f}".format(k, v) for k, v in zip(self.vsrgan.metrics_names, g_avg_loss)]),
+                    ", ".join(["{}={:.4f}".format(k, v) for k, v in zip(self.vsrganplus.metrics_names, g_avg_loss)]),
                     ", ".join(["{}={:.4f}".format(k, v) for k, v in zip(self.discriminator.metrics_names, d_avg_loss)])
                 ))
                 print_losses = {"GAN": [], "D": []}
@@ -771,22 +767,22 @@ class VSRGAN():
 
     
 def restoration(resolution=None,k=1,qp='25'):
-    logging.basicConfig(filename='../logs/vsrgan.log', level=logging.INFO)
+    logging.basicConfig(filename='../logs/vsrganplus.log', level=logging.INFO)
     logging.info('Started')
 
     #------------------------------------------------------
 
     # Instantiate the TSRGAN object
-    logging.info(">> Creating the VSRGAN network")
-    # Instantiate the VSRGAN object
-    print(">> Creating the VSRGAN network")
-    vsrgan = VSRGAN(upscaling_factor=2,channels=3,colorspace='RGB',training_mode=True)
-    vsrgan.load_weights('../model/VSRGAN_places365_generator_2X.h5')
+    logging.info(">> Creating the VSRGANplus network")
+    # Instantiate the VSRGANplus object
+    print(">> Creating the VSRGANplus network")
+    vsrganplus = VSRGANplus(upscaling_factor=2,channels=3,colorspace='RGB',training_mode=True)
+    vsrganplus.load_weights('../model/VSRGANplus_places365_generator_2X.h5')
 
 
     if(resolution==None):
         datapath = '/media/joao/SAMSUNG1/data/videoSRC180_1920x1080_24_mp4/' 
-        outpath ='/media/joao/SAMSUNG1/data/out/VSRGAN+/'
+        outpath ='/media/joao/SAMSUNG1/data/out/VSRGANplus+/'
         lfilenames = []
         for dirpath, _, filenames in os.walk(datapath):
             lfilenames = [os.path.join(dirpath, f) for f in filenames if any(filetype in f.lower() for filetype in ['jpeg', 'png', 'jpg','mp4','264','webm','wma'])]
@@ -794,7 +790,7 @@ def restoration(resolution=None,k=1,qp='25'):
         for filename in sorted(lfilenames): 
             if(i>=k):
                 print("i={} - {} {}".format(i,filename,outpath+filename.split('/')[-1].split('.')[0]+'.mp4'))
-                t = vsrgan.predict(
+                t = vsrganplus.predict(
                         lr_path=filename,
                         sr_path=outpath+filename.split('/')[-1].split('.')[0]+'.mp4',
                         qp=i-1,
@@ -815,7 +811,7 @@ def restoration(resolution=None,k=1,qp='25'):
         for filename in sorted(lfilenames): 
             if(i>=k):
                 print("i={} - {} {}".format(i,filename,outpath+filename.split('/')[-1].split('.')[0]+'.mp4'))
-                t = vsrgan.predict(
+                t = vsrganplus.predict(
                         lr_path=filename,
                         sr_path=outpath+filename.split('/')[-1].split('.')[0]+'.mp4',
                         qp=0,
@@ -833,7 +829,7 @@ def restoration(resolution=None,k=1,qp='25'):
             for filename in filenames:
                 if(i>=k):
                     print("i={} - {}".format(i,os.path.join(dirpath, filename),outpath+filename.split('.')[0]+'.mp4'))
-                    t = vsrgan.predict(
+                    t = vsrganplus.predict(
                             lr_path=os.path.join(dirpath, filename), 
                             sr_path=outpath+filename.split('.')[0]+'.mp4',
                             qp=0,
@@ -848,16 +844,16 @@ def restoration(resolution=None,k=1,qp='25'):
     logging.info('Finished')
 
 
-# Run the VSRGAN network
+# Run the VSRGANplus network
 if __name__ == "__main__":
 
     restoration()
 
-    # Train the VSRGAN
-    """ gan.train_vsrgan(
+    # Train the VSRGANplus
+    """ gan.train_vsrganplus(
         epochs=1000,
         batch_size=16,
-        modelname='VSRGAN',
+        modelname='VSRGANplus',
         datapath_train='../../../data/train_large/',
         datapath_validation='../../data/val_large/',        
         steps_per_validation=10,
@@ -876,7 +872,7 @@ if __name__ == "__main__":
 
     """ gan.train_generator(
         epochs=50,batch_size=16,workers=1,
-        modelname='VSRGAN',
+        modelname='VSRGANplus',
 	    datapath_train='../../../data/train_large/',
 	    datapath_validation='../../data/val_large/',
 	    datapath_test='../../data/benchmarks/Set5/',

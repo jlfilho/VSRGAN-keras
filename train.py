@@ -14,25 +14,25 @@ import matplotlib.pyplot as plt
 # Import backend without the "Using X Backend" message
 from argparse import ArgumentParser
 from PIL import Image
-from esrgan import ESRGAN
+from vsrganplus import VSRGANplus
 from util import plot_test_images, DataLoader
-from keras import backend as K
+from tensorflow.keras import backend as K
 
 
 # Sample call
 """
-# Train 2X ESRGAN
-python3 train.py --train ../../data/train_large/ --validation ../data/val_large/ --test ../data/benchmarks/Set5/  --log_test_path ./test/ --scale 2 --stage all
+# Train 2X VSRGANplus
+python3 train.py --train ../data/train2017/ --validation ../data/val_large/ --test ../data/benchmarks/Set5/  --log_test_path ./test/ --scale 2 --stage all
 
-# Train the 4X ESRGAN
+# Train the 4X VSRGANplus
 python3 train.py --train ../../data/train_large/ --validation ../data/val_large/ --test ../data/benchmarks/Set5/  --log_test_path ./test/ --scale 4 --scaleFrom 2 --stage all
 
-# Train the 8X ESRGAN
+# Train the 8X VSRGANplus
 python3 train.py --train ../../data/train_large/ --validation ../data/val_large/ --test ../data/benchmarks/Set5/  --log_test_path ./test/ --scale 8 --scaleFrom 4 --stage all
 """
 
 def parse_args():
-    parser = ArgumentParser(description='Training script for ESRGAN')
+    parser = ArgumentParser(description='Training script for VSRGANplus')
 
     parser.add_argument(
         '-s', '--stage',
@@ -85,7 +85,7 @@ def parse_args():
 
     parser.add_argument(
         '-pf', '--print_frequency',
-        type=int, default=10,
+        type=int, default=1,
         help='Frequency of print test images'
     )
         
@@ -187,7 +187,7 @@ def parse_args():
 
     parser.add_argument(
         '-mt', '--media_type',
-        type=str, default='i',
+        type=str, default='v',
         help='Type of media i to image or v to video'
     )
 
@@ -206,15 +206,15 @@ def reset_layer_names(args):
     loads the weights onto that network, and saves the weights again with proper names'''
 
     # Find lower-upscaling model results
-    BASE_G = os.path.join(args.weight_path, 'ESRGAN'+args.modelname+'_generator_'+str(args.scaleFrom)+'X.h5')
-    BASE_D = os.path.join(args.weight_path, 'ESRGAN'+args.modelname+'_discriminator_'+str(args.scaleFrom)+'X.h5')
+    BASE_G = os.path.join(args.weight_path, 'VSRGANplus'+args.modelname+'_generator_'+str(args.scaleFrom)+'X.h5')
+    BASE_D = os.path.join(args.weight_path, 'VSRGANplus'+args.modelname+'_discriminator_'+str(args.scaleFrom)+'X.h5')
     assert os.path.isfile(BASE_G), 'Could not find '+BASE_G
     assert os.path.isfile(BASE_D), 'Could not find '+BASE_D
     
     # Load previous model with weights, and re-save weights so that name ordering will match new model
-    prev_gan = ESRGAN(upscaling_factor=args.scaleFrom)
+    prev_gan = VSRGANplus(upscaling_factor=args.scaleFrom)
     prev_gan.load_weights(BASE_G, BASE_D)
-    prev_gan.save_weights(args.weight_path+'ESRGAN{}'.format(args.modelname))
+    prev_gan.save_weights(args.weight_path+'VSRGANplus{}'.format(args.modelname))
     del prev_gan
     K.reset_uids()
     gc.collect()
@@ -255,9 +255,9 @@ def train_generator(args, gan, common, epochs=None):
 def train_gan(args, gan, common, epochs=None):
     '''Just a convenience function for training the GAN'''
     
-    gan.train_esrgan(
+    gan.train_vsrganplus(
         epochs=epochs,
-        modelname='ESRGAN'+args.modelname,    
+        modelname='VSRGANplus'+args.modelname,    
         log_weight_frequency=args.log_weight_frequency,
         log_test_frequency=args.log_test_frequency,
         first_epoch=args.first_epoch,
@@ -299,8 +299,8 @@ if __name__ == '__main__':
 
     # Generator weight paths
     srresnet_path = os.path.join(args.weight_path, 'SRResNet{}_{}X.h5'.format(args.modelname,args.scale))
-    srrgan_G_path = os.path.join(args.weight_path, 'ESRGAN{}_generator_{}X.h5'.format(args.modelname,args.scale))
-    srrgan_D_path = os.path.join(args.weight_path, 'ESRGAN{}_discriminator_{}X.h5'.format(args.modelname,args.scale))
+    srrgan_G_path = os.path.join(args.weight_path, 'VSRGANplus{}_generator_{}X.h5'.format(args.modelname,args.scale))
+    srrgan_D_path = os.path.join(args.weight_path, 'VSRGANplus{}_discriminator_{}X.h5'.format(args.modelname,args.scale))
     # Generator weight paths
     
     ## FIRST STAGE: TRAINING GENERATOR ONLY WITH MSE LOSS
@@ -316,20 +316,20 @@ if __name__ == '__main__':
             BASE_G, BASE_D = reset_layer_names(args)
 
             # Load the properly named weights onto this model and freeze lower-level layers
-            gan = ESRGAN(gen_lr=1e-4, **args_model)
+            gan = VSRGANplus(gen_lr=1e-4, **args_model)
                 
             gan.load_weights(BASE_G, BASE_D, by_name=True)
             gan_freeze_layers(args, gan)
             train_generator(args, gan, args_train, epochs=3)
 
             # Train entire generator for 3 epochs
-            gan = ESRGAN(gen_lr=1e-4, **args_model)
+            gan = VSRGANplus(gen_lr=1e-4, **args_model)
             gan.load_weights(srresnet_path)
             train_generator(args, gan, args_train, epochs=3)
         else: 
             # As in paper - train for 10 epochs
-            gan = ESRGAN(gen_lr=2*1e-4, **args_model)
-            #gan.load_weights(srresnet_path)#Teste 
+            gan = VSRGANplus(gen_lr=2*1e-4, **args_model)
+            gan.load_weights(srresnet_path)#Teste 
             train_generator(args, gan, args_train, epochs=args.epochs)        
 
     ## SECOND STAGE: TRAINING GAN WITH HIGH LEARNING RATE
@@ -337,7 +337,7 @@ if __name__ == '__main__':
 
     # Re-initialize & train the GAN - load just created generator weights
     if args.stage in ['all', 'gan']:
-        gan = ESRGAN(gen_lr=1e-4, dis_lr=1e-4, ra_lr = 1e-4, loss_weights=[1., 5e-3,1e-2],
+        gan = VSRGANplus(gen_lr=1e-4, dis_lr=1e-4, ra_lr = 1e-4, loss_weights=[1., 5e-3,1e-2],
             **args_model)
         gan.load_weights(srresnet_path)
         #gan.load_weights(srrgan_G_path, srrgan_D_path)

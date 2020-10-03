@@ -123,7 +123,7 @@ class DataLoader(Sequence):
      
     def load_frame(self,videopath):
         """Get n_imgs random frames from the video"""
-        choiced_frame=self.get_random_frames(1,videopath)
+        choiced_frame=self.get_random_frames(1,videopath)[0]
         #print("Frame no.: ",choiced_frame)
         cap = cv2.VideoCapture(videopath) 
         cap.set(1,choiced_frame)
@@ -151,6 +151,7 @@ class DataLoader(Sequence):
         elif(self.media_type=='v' and os.path.isdir(self.datapath)):
             #print("2. Media type video folder")
             imgs_lr, imgs_hr = self.load_batch_video(idx, img_paths=None, training=training, bicubic=False)
+            
         elif(self.media_type=='v' and not os.path.isdir(self.datapath)):
             #print("3. Media type single video")
             imgs_lr, imgs_hr = self.load_batch_video(idx, img_paths=self.datapath, training=training, bicubic=False)
@@ -158,6 +159,11 @@ class DataLoader(Sequence):
             print("Error: type of media fail")
         return imgs_lr, imgs_hr
 
+    def dowscale_image(self,img_hr,ksize=5):
+        # For LR, do bicubic downsampling
+        lr_shape = (int(img_hr.shape[1]/self.scale), int(img_hr.shape[0]/self.scale))          
+        img_lr = cv2.resize(cv2.GaussianBlur(img_hr,(ksize,ksize),0),lr_shape, interpolation = cv2.INTER_CUBIC)
+        return img_lr 
 
     def load_batch_video(self, idx=0, img_paths=None, training=True, bicubic=False):
         """Loads a batch of frames from videos folder""" 
@@ -179,7 +185,6 @@ class DataLoader(Sequence):
                     break
             if img_paths is not None and len(imgs_hr) == len(img_paths):
                 break            
-            
             try: 
                 # Load image
                 img_hr = None
@@ -212,12 +217,9 @@ class DataLoader(Sequence):
                             break
                     if img_paths is not None and len(imgs_hr) == len(img_paths):
                         break   
-
-                    # For LR, do bicubic downsampling
-                    method = Image.BICUBIC if bicubic else choice(self.options)
-                    lr_shape = (int(img_hr.shape[1]/self.scale), int(img_hr.shape[0]/self.scale))           
-                    img_lr = Image.fromarray(img_hr.astype(np.uint8))
-                    img_lr = np.array(img_lr.resize(lr_shape, method))
+                        
+                    # Downscale and insert gausian blur in LR image     
+                    img_lr = self.dowscale_image(img_hr)
 
                     # Scale color values
                     img_hr = self.scale_hr_imgs(img_hr)
@@ -229,6 +231,7 @@ class DataLoader(Sequence):
                     imgs_lr.append(img_lr[:,:,:self.channels])
                 
             except Exception as e:
+                
                 print(e)
                 pass
             finally:
@@ -295,16 +298,8 @@ class DataLoader(Sequence):
                     if img_paths is not None and len(imgs_hr) == len(img_paths):
                         break   
 
-                    # For LR, do bicubic downsampling
-                    # method = Image.BICUBIC if bicubic else choice(self.options)
-                    # lr_shape = (int(img_hr.shape[1]/self.scale), int(img_hr.shape[0]/self.scale))           
-                    # img_lr = Image.fromarray(img_hr.astype(np.uint8))
-                    # img_lr = np.array(img_lr.resize(lr_shape, method))
-
-                    # For LR, do bicubic downsampling
-                    lr_shape = (int(img_hr.shape[1]/self.scale), int(img_hr.shape[0]/self.scale))  
-                
-                    img_lr = cv2.resize(cv2.GaussianBlur(img_hr,(5,5),0),lr_shape, interpolation = cv2.INTER_CUBIC)
+                    # Downscale and insert gausian blur in LR image     
+                    img_lr = self.dowscale_image(img_hr)
 
 
                     # Scale color values
