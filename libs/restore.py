@@ -79,7 +79,7 @@ def sr_genarator(model,img_lr,scale):
     return img_sr
 
 
-def write_srvideo(model=None,lr_videopath=None,sr_videopath=None,scale=None,print_frequency=False,crf=15,fps=None,gpu=False):
+def write_srvideo(model=None,lr_videopath=None,sr_videopath=None,scale=None,print_frequency=False,crf=None,fps=None,gpu=False):
     """Generate SR video given LR video """
     videogen = skvideo.io.FFmpegReader(lr_videopath)
     t_frames, height, width, _  = videogen.getShape() 
@@ -118,7 +118,7 @@ def write_srvideo(model=None,lr_videopath=None,sr_videopath=None,scale=None,prin
     videogen = skvideo.io.FFmpegReader(sr_videopath)
     print(">> Outputshape: ",videogen.getShape())
     print('>> Video resized in '+str(time_elapsed)+'s')
-    print('>> Average FTP '+str(count/time_elapsed))
+    print('>> Average FPS '+str(count/time_elapsed))
     return time_elapsed
 
 

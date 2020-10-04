@@ -22,7 +22,7 @@ from tensorflow.keras import backend as K
 # Sample call
 """
 # Train 2X VSRGANplus
-python3 train.py --train ../data/videoset/1080p/ --validation ../data/val_large/ --test ../data/benchmarks/Set5/  --log_test_path ./test/ --steps_per_epoch 200 --scale 2 --stage all
+python3 train.py --train ../data/videoset/1080p/ --validation ../data/val_large/ --test /media/joao/SAMSUNG1/data/out/test/  --log_test_path ./test/ --steps_per_epoch 200 --scale 2 --stage all
 
 # Train the 4X VSRGANplus
 python3 train.py --train ../../data/train_large/ --validation ../data/val_large/ --test ../data/benchmarks/Set5/  --log_test_path ./test/ --scale 4 --scaleFrom 2 --stage all
@@ -85,7 +85,7 @@ def parse_args():
 
     parser.add_argument(
         '-pf', '--print_frequency',
-        type=int, default=1,
+        type=int, default=5,
         help='Frequency of print test images'
     )
         
@@ -103,7 +103,7 @@ def parse_args():
         
     parser.add_argument(
         '-w', '--workers',
-        type=int, default=4,
+        type=int, default=1,
         help='How many workers to user for pre-processing'
     )
 
@@ -331,7 +331,6 @@ if __name__ == '__main__':
             gan = VSRGANplus(gen_lr=2*1e-4, **args_model)
             gan.load_weights(srresnet_path)#Teste 
 
-            #gan.generator.summary()
 
             trainable=False
             for layer in gan.generator.layers:
@@ -349,6 +348,8 @@ if __name__ == '__main__':
                 if 'conv2d_16' == layer.name:
                     trainable = True
                 layer.trainable = trainable
+            gan.compile_generator(gan.generator)    
+            gan.generator.summary()
 
             train_generator(args, gan, args_train, epochs=args.epochs)        
 
@@ -377,7 +378,9 @@ if __name__ == '__main__':
             if 'conv2d_16' == layer.name:
                 trainable = True
             layer.trainable = trainable
-            
+        gan.compile_generator(gan.generator)    
+        gan.generator.summary()    
+        
         #gan.load_weights(srrgan_G_path, srrgan_D_path)
         print("TRAINING GAN WITH HIGH LEARNING RATE")
         train_gan(args, gan, args_train, epochs= args.epochs//10 if args.epochs == int(4e5) else args.epochs)

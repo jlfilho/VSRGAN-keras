@@ -769,15 +769,14 @@ class VSRGANplus():
 def restoration(resolution=None,k=1,qp='25'):
     logging.basicConfig(filename='../logs/vsrganplus.log', level=logging.INFO)
     logging.info('Started')
-
     #------------------------------------------------------
 
     # Instantiate the TSRGAN object
     logging.info(">> Creating the VSRGANplus network")
     # Instantiate the VSRGANplus object
     print(">> Creating the VSRGANplus network")
-    vsrganplus = VSRGANplus(upscaling_factor=2,channels=3,colorspace='RGB',training_mode=True)
-    vsrganplus.load_weights('../model/SRResNet_places365_2X.h5')
+    vsrganplus = VSRGANplus(upscaling_factor=2,channels=3,colorspace='RGB',training_mode=False)
+    vsrganplus.load_weights('../model/VSRGANplus_places365_generator_2X.h5')
 
 
 
@@ -788,7 +787,7 @@ def restoration(resolution=None,k=1,qp='25'):
         for dirpath, _, filenames in os.walk(datapath):
             lfilenames = [os.path.join(dirpath, f) for f in filenames if any(filetype in f.lower() for filetype in ['jpeg', 'png', 'jpg','mp4','264','webm','wma'])]
         i=1
-        for filename in sorted(lfilenames): 
+        for filename in sorted(lfilenames):
             if(i>=k):
                 print("i={} - {} {}".format(i,filename,outpath+filename.split('/')[-1].split('.')[0]+'.mp4'))
                 t = vsrganplus.predict(
